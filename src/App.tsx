@@ -37,6 +37,7 @@ import {
   safeSaveToLocalStorage, 
   safeLoadFromLocalStorage 
 } from './utils/localDatabase';
+import { fetchSubmissionsFromGoogleSheet, mergeSubmissions } from './utils/googleSheetsSync';
 
 export default function App() {
   // Ensure the live Google Apps Script Webhook URL is set by default
@@ -62,7 +63,7 @@ export default function App() {
     return filterOnlyRealSubmissions(saved);
   });
 
-  // Tự động tải dữ liệu đầy đủ từ IndexedDB (chỉ nhận dữ liệu thật)
+  // Tự động tải dữ liệu đầy đủ từ IndexedDB, Backend Server và Google Sheets
   useEffect(() => {
     loadSubmissionsFromIndexedDB()
       .then((indexedData) => {
@@ -75,6 +76,31 @@ export default function App() {
       .catch(() => {
         setIsDbLoaded(true);
       });
+
+    // 1. Nạp từ Backend Server trung tâm (chia sẻ giữa các thiết bị)
+    fetch('/api/submissions')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.submissions && Array.isArray(data.submissions) && data.submissions.length > 0) {
+          const realData = filterOnlyRealSubmissions(data.submissions);
+          if (realData.length > 0) {
+            setSubmissions((prev) => mergeSubmissions(prev, realData));
+          }
+        }
+      })
+      .catch(() => {});
+
+    // 2. Tự động lấy tất cả dữ liệu thực từ Google Sheet
+    fetchSubmissionsFromGoogleSheet()
+      .then((res) => {
+        if (res.success && res.submissions && res.submissions.length > 0) {
+          const realData = filterOnlyRealSubmissions(res.submissions);
+          if (realData.length > 0) {
+            setSubmissions((prev) => mergeSubmissions(prev, realData));
+          }
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // Tự động lưu an toàn vào IndexedDB (dung lượng không giới hạn) và LocalStorage (được lọc quota an toàn)
@@ -213,12 +239,24 @@ export default function App() {
 
     // Tự động đồng bộ ngay vào Google Apps Script & Drive trong nền
     syncSubmissionToAppsScript(newSub).catch(() => {});
+
+    // Đồng bộ lên máy chủ backend trung tâm
+    fetch('/api/submissions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newSub),
+    }).catch(() => {});
   };
 
   const handleUpdateSubmission = (updated: StudentSubmission) => {
     setSubmissions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
     // Đồng bộ lại khi thầy cô cập nhật trạng thái/phản hồi
     syncSubmissionToAppsScript(updated).catch(() => {});
+    fetch(`/api/submissions/${updated.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updated),
+    }).catch(() => {});
   };
 
   const handleSendStudentReply = (
@@ -244,6 +282,11 @@ export default function App() {
             studentReplyDuration: replyAudioDuration || s.studentReplyDuration,
           };
           syncSubmissionToAppsScript(updatedSub).catch(() => {});
+          fetch(`/api/submissions/${updatedSub.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updatedSub),
+          }).catch(() => {});
           return updatedSub;
         }
         return s;
@@ -263,6 +306,7 @@ export default function App() {
       <TeacherDashboard
         submissions={submissions}
         onUpdateSubmission={handleUpdateSubmission}
+        onSubmissionsUpdated={(merged) => setSubmissions(merged)}
         onExitDashboard={() => setIsTeacherDashboardOpen(false)}
       />
     );

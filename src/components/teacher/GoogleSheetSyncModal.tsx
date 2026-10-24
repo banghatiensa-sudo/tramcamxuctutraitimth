@@ -1,41 +1,169 @@
 import React, { useState } from 'react';
 import { 
   Sheet, Copy, Check, ExternalLink, RefreshCw, X, ShieldCheck, 
-  CheckCircle2, AlertCircle, Folder, FileAudio, FileImage, Sparkles 
+  CheckCircle2, AlertCircle, Folder, FileAudio, FileImage, Sparkles,
+  Download, Upload, Link2
 } from 'lucide-react';
 import { StudentSubmission } from '../../types/emotion';
+import { 
+  fetchSubmissionsFromGoogleSheet, 
+  mergeSubmissions,
+  getSavedWebhookUrl,
+  getSavedSheetUrl,
+  STORAGE_WEBHOOK_KEY,
+  STORAGE_SHEET_KEY
+} from '../../utils/googleSheetsSync';
 
 interface GoogleSheetSyncModalProps {
   isOpen: boolean;
   onClose: () => void;
   submissions: StudentSubmission[];
+  onSubmissionsUpdated?: (merged: StudentSubmission[]) => void;
 }
 
 export const GoogleSheetSyncModal: React.FC<GoogleSheetSyncModalProps> = ({
   isOpen,
   onClose,
   submissions,
+  onSubmissionsUpdated,
 }) => {
-  const [webhookUrl, setWebhookUrl] = useState(() => {
-    return (
-      localStorage.getItem('tram_cam_xuc_webhook_url') ||
-      'https://script.google.com/macros/s/AKfycbwdLkyRxhPvjDvtk6K-fbrV6zInYP_hgPE0fd_lprNoPuNB6Nbum1cznD_jtXA_x34/exec'
-    );
-  });
-  const [isSyncing, setIsSyncing] = useState(false);
+  const [webhookUrl, setWebhookUrl] = useState(() => getSavedWebhookUrl());
+  const [sheetUrl, setSheetUrl] = useState(() => getSavedSheetUrl());
+  const [isPulling, setIsPulling] = useState(false);
+  const [isPushing, setIsPushing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<{ success: boolean; message: string } | null>(null);
   const [copiedScript, setCopiedScript] = useState(false);
 
-  // MÃ NGUỒN CHUẨN GOOGLE APPS SCRIPT (Code.gs)
+  // MÃ NGUỒN CHUẨN GOOGLE APPS SCRIPT (Bao gồm CẢ doPost để lưu và doGet để lấy dữ liệu về Admin)
   const appsScriptCode = `/**
  * ============================================================================
  * TRẠM CẢM XÚC TỪ TRÁI TIM - GOOGLE APPS SCRIPT (Code.gs)
  * ============================================================================
- * Tự động đồng bộ dữ liệu chia sẻ của học sinh vào Google Sheet &
- * Tự động giải mã Audio / Ảnh / Video Base64 lưu vào Google Drive thư mục:
- * "Trạm Cảm Xúc - Tệp Đính Kèm" với quyền xem ANYONE_WITH_LINK.
+ * 1. doPost(e): Tự động nhận bài học sinh, giải mã Audio/Video/Ảnh lưu Drive
+ *    và ghi dòng mới vào Google Sheet.
+ * 2. doGet(e): Tự động đọc toàn bộ bài học sinh từ Google Sheet trả về JSON
+ *    cho giao diện Admin trên web hiển thị đầy đủ dữ liệu thực tế.
  */
 
+// 1. HÀM ĐỌC DỮ LIỆU TỪ GOOGLE SHEET TRẢ VỀ CHO GIAO DIỆN ADMIN WEB
+function doGet(e) {
+  var lock = LockService.getScriptLock();
+  lock.tryLock(15000);
+
+  try {
+    var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = spreadsheet.getSheetByName("Dữ Liệu Học Sinh") || spreadsheet.getActiveSheet();
+    var lastRow = sheet.getLastRow();
+    var lastCol = sheet.getLastColumn();
+
+    if (lastRow <= 1 || lastCol === 0) {
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "success",
+        count: 0,
+        submissions: []
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var values = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+    var headers = values[0];
+    var colMap = {};
+    for (var c = 0; c < headers.length; c++) {
+      var h = (headers[c] || "").toString().toLowerCase().trim();
+      if (h.indexOf("stt") !== -1) colMap["stt"] = c;
+      else if (h.indexOf("mã") !== -1) colMap["code"] = c;
+      else if (h.indexOf("tên") !== -1) colMap["name"] = c;
+      else if (h.indexOf("lớp") !== -1) colMap["class"] = c;
+      else if (h.indexOf("cảm xúc") !== -1) colMap["emotion"] = c;
+      else if (h.indexOf("thể loại") !== -1) colMap["category"] = c;
+      else if (h.indexOf("tiêu đề") !== -1) colMap["title"] = c;
+      else if (h.indexOf("nội dung") !== -1) colMap["content"] = c;
+      else if (h.indexOf("ghi âm") !== -1) colMap["audio"] = c;
+      else if (h.indexOf("hình ảnh") !== -1 || h.indexOf("video") !== -1 || h.indexOf("ảnh") !== -1) colMap["media"] = c;
+      else if (h.indexOf("ưu tiên") !== -1 || h.indexOf("mức độ") !== -1) colMap["priority"] = c;
+      else if (h.indexOf("trạng thái") !== -1) colMap["status"] = c;
+      else if (h.indexOf("ghi chú") !== -1) colMap["note"] = c;
+      else if (h.indexOf("thời gian") !== -1 || h.indexOf("ngày") !== -1) colMap["time"] = c;
+    }
+
+    var list = [];
+    for (var r = 1; r < values.length; r++) {
+      var row = values[r];
+      if (!row || row.every(function(cell) { return cell === "" || cell === null; })) continue;
+
+      var secretCode = (colMap["code"] !== undefined ? row[colMap["code"]] : row[1]) || ("TCX-" + (1000 + r));
+      secretCode = secretCode.toString().trim();
+      if (!secretCode) continue;
+
+      var studentName = (colMap["name"] !== undefined ? row[colMap["name"]] : row[2]) || "Ẩn danh";
+      var studentClass = (colMap["class"] !== undefined ? row[colMap["class"]] : row[3]) || "";
+      var emotionRaw = (colMap["emotion"] !== undefined ? row[colMap["emotion"]] : row[4]) || "vui_ve";
+      var category = (colMap["category"] !== undefined ? row[colMap["category"]] : row[5]) || "Chia sẻ";
+      var title = (colMap["title"] !== undefined ? row[colMap["title"]] : row[6]) || "Tâm sự của học sinh";
+      var content = (colMap["content"] !== undefined ? row[colMap["content"]] : row[7]) || "";
+      var audioUrl = (colMap["audio"] !== undefined ? row[colMap["audio"]] : "") || "";
+      var mediaUrl = (colMap["media"] !== undefined ? row[colMap["media"]] : "") || "";
+      var priorityText = (colMap["priority"] !== undefined ? row[colMap["priority"]] : "") || "";
+      var statusText = (colMap["status"] !== undefined ? row[colMap["status"]] : "") || "Mới tiếp nhận";
+      var note = (colMap["note"] !== undefined ? row[colMap["note"]] : "") || "";
+      var timeText = (colMap["time"] !== undefined ? row[colMap["time"]] : "") || Utilities.formatDate(new Date(), "GMT+7", "yyyy-MM-dd HH:mm");
+
+      var emotion = "vui_ve";
+      var emLower = emotionRaw.toString().toLowerCase();
+      if (emLower.indexOf("buon") !== -1) emotion = "buon_ba";
+      else if (emLower.indexOf("lo") !== -1) emotion = "lo_lang";
+      else if (emLower.indexOf("tuc") !== -1 || emLower.indexOf("gian") !== -1) emotion = "tuc_gian";
+      else if (emLower.indexOf("kho") !== -1) emotion = "kho_noi";
+
+      var isUrgent = priorityText.toString().toUpperCase().indexOf("SOS") !== -1 || priorityText.toString().toUpperCase().indexOf("KHẨN CẤP") !== -1;
+
+      var imageUrl = "";
+      var videoUrl = "";
+      var mLower = mediaUrl.toString().toLowerCase();
+      if (mLower.indexOf("video") !== -1 || mLower.indexOf(".webm") !== -1 || mLower.indexOf(".mp4") !== -1) {
+        videoUrl = mediaUrl.toString();
+      } else if (mediaUrl) {
+        imageUrl = mediaUrl.toString();
+      }
+
+      list.push({
+        id: "sheet-row-" + r + "-" + secretCode,
+        secretCode: secretCode,
+        studentName: studentName.toString(),
+        studentClass: studentClass.toString(),
+        emotion: emotion,
+        category: category.toString(),
+        title: title.toString(),
+        content: content.toString(),
+        audioUrl: audioUrl.toString() || undefined,
+        imageUrl: imageUrl || undefined,
+        videoUrl: videoUrl || undefined,
+        isUrgent: isUrgent,
+        status: statusText.toString(),
+        teacherNote: note.toString(),
+        timestamp: timeText.toString(),
+        feedbacks: []
+      });
+    }
+
+    list.reverse();
+
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "success",
+      count: list.length,
+      submissions: list
+    })).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (error) {
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "error",
+      message: error.toString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 2. HÀM GHI BÀI CHIA SẺ MỚI VÀO GOOGLE SHEET & LƯU TỆP VÀO GOOGLE DRIVE
 function doPost(e) {
   var lock = LockService.getScriptLock();
   lock.tryLock(30000);
@@ -49,30 +177,17 @@ function doPost(e) {
     var sheet = spreadsheet.getSheetByName("Dữ Liệu Học Sinh") || spreadsheet.getActiveSheet();
     sheet.setName("Dữ Liệu Học Sinh");
 
-    // 1. TẠO HOẶC LẤY THƯ MỤC TRÊN GOOGLE DRIVE
     var folderName = "Trạm Cảm Xúc - Tệp Đính Kèm";
     var folders = DriveApp.getFoldersByName(folderName);
     var targetFolder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
     targetFolder.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
 
-    // 2. TỰ ĐỘNG ĐỌC VÀ CĂN CHỈNH ĐÚNG CÁC CỘT THEO BẢNG TÍNH CỦA TRƯỜNG
     var numCols = sheet.getLastColumn();
     if (numCols === 0) {
-      // Nếu trang tính chưa có cột nào, tạo đúng thứ tự cột chuẩn
       var headers = [
-        "STT",
-        "Mã bí mật",
-        "Tên học sinh",
-        "Lớp",
-        "Cảm xúc",
-        "Thể loại",
-        "Tiêu đề",
-        "Nội dung chia sẻ",
-        "Link Ghi Âm Drive",
-        "Link Hình Ảnh / Video Drive",
-        "Mức độ ưu tiên",
-        "Trạng thái xử lý",
-        "Ghi chú của Thầy Cô"
+        "STT", "Mã bí mật", "Tên học sinh", "Lớp", "Cảm xúc", "Thể loại",
+        "Tiêu đề", "Nội dung chia sẻ", "Link Ghi Âm Drive", "Link Hình Ảnh / Video Drive",
+        "Mức độ ưu tiên", "Trạng thái xử lý", "Ghi chú của Thầy Cô", "Thời gian gửi"
       ];
       sheet.appendRow(headers);
       numCols = headers.length;
@@ -87,8 +202,7 @@ function doPost(e) {
       sheet.setFrozenRows(1);
     }
 
-    // Đọc danh sách tiêu đề thực tế trên Dòng 1 của bảng tính
-    var existingHeaders = sheet.getRange(1, 1, 1, Math.max(numCols, 12)).getValues()[0];
+    var existingHeaders = sheet.getRange(1, 1, 1, Math.max(numCols, 14)).getValues()[0];
     var colMap = {};
     for (var c = 0; c < existingHeaders.length; c++) {
       var h = (existingHeaders[c] || "").toString().toLowerCase().trim();
@@ -105,16 +219,15 @@ function doPost(e) {
       else if (h.indexOf("ưu tiên") !== -1 || h.indexOf("mức độ") !== -1) colMap["priority"] = c;
       else if (h.indexOf("trạng thái") !== -1) colMap["status"] = c;
       else if (h.indexOf("ghi chú") !== -1) colMap["note"] = c;
+      else if (h.indexOf("thời gian") !== -1 || h.indexOf("ngày") !== -1) colMap["time"] = c;
     }
 
     var processedCount = 0;
 
-    // 3. XỬ LÝ TỪNG BÀI CHIA SẺ VÀ LƯU VÀO ĐÚNG CỘT
     for (var i = 0; i < submissions.length; i++) {
       var item = submissions[i];
       var secretCode = item.secretCode || ("TCX-" + Math.floor(1000 + Math.random() * 9000));
 
-      // Xử lý File Âm Thanh Base64 (audioBase64 hoặc audioUrl)
       var driveAudioUrl = "";
       var audioData = item.audioBase64 || item.audioUrl;
       if (audioData && audioData.indexOf("base64,") !== -1) {
@@ -131,9 +244,10 @@ function doPost(e) {
         } catch (errAudio) {
           driveAudioUrl = "Lỗi lưu audio: " + errAudio.toString();
         }
+      } else if (audioData && audioData.indexOf("http") === 0) {
+        driveAudioUrl = audioData;
       }
 
-      // Xử lý File Hình Ảnh / Video Base64 (photoBase64, videoBase64, imageUrl hoặc videoUrl)
       var driveImageUrl = "";
       var mediaData = item.photoBase64 || item.videoBase64 || item.imageUrl || item.videoUrl;
       if (mediaData && mediaData.indexOf("base64,") !== -1) {
@@ -153,13 +267,13 @@ function doPost(e) {
         } catch (errMedia) {
           driveImageUrl = "Lỗi lưu tệp: " + errMedia.toString();
         }
+      } else if (mediaData && mediaData.indexOf("http") === 0) {
+        driveImageUrl = mediaData;
       }
 
       var nextRow = sheet.getLastRow() + 1;
       var priorityText = item.isUrgent ? "KHẨN CẤP (SOS)" : "Bình thường";
-
-      // Xây dựng hàng dữ liệu: Căn chỉnh theo cấu trúc động của bảng tính
-      var targetLength = Math.max(existingHeaders.length, 12);
+      var targetLength = Math.max(existingHeaders.length, 14);
       var rowData = new Array(targetLength).fill("");
 
       if (colMap["stt"] !== undefined) rowData[colMap["stt"]] = nextRow - 1;
@@ -186,29 +300,15 @@ function doPost(e) {
       if (colMap["content"] !== undefined) rowData[colMap["content"]] = item.content || "";
       else rowData[7] = item.content || "";
 
-      // Điền Link Ghi Âm & Link Hình Ảnh vào đúng cột
-      if (colMap["audio"] !== undefined) {
-        rowData[colMap["audio"]] = driveAudioUrl;
-      }
-      if (colMap["media"] !== undefined) {
-        rowData[colMap["media"]] = driveImageUrl || (colMap["audio"] === undefined ? driveAudioUrl : "");
-      } else if (colMap["audio"] === undefined) {
-        // Nếu chỉ có 1 cột đa phương tiện
-        rowData[8] = driveImageUrl || driveAudioUrl;
-      }
-
+      if (colMap["audio"] !== undefined) rowData[colMap["audio"]] = driveAudioUrl;
+      if (colMap["media"] !== undefined) rowData[colMap["media"]] = driveImageUrl;
       if (colMap["priority"] !== undefined) rowData[colMap["priority"]] = priorityText;
-      else if (rowData.length > 9) rowData[rowData.length - 3] = priorityText;
-
       if (colMap["status"] !== undefined) rowData[colMap["status"]] = item.status || "Mới tiếp nhận";
-      else if (rowData.length > 10) rowData[rowData.length - 2] = item.status || "Mới tiếp nhận";
-
       if (colMap["note"] !== undefined) rowData[colMap["note"]] = item.teacherNote || "";
-      else if (rowData.length > 11) rowData[rowData.length - 1] = item.teacherNote || "";
+      if (colMap["time"] !== undefined) rowData[colMap["time"]] = item.timestamp || Utilities.formatDate(new Date(), "GMT+7", "yyyy-MM-dd HH:mm");
 
       sheet.appendRow(rowData);
 
-      // Nếu là trường hợp khẩn cấp SOS, tô nền đỏ cảnh báo
       if (item.isUrgent) {
         sheet.getRange(nextRow, 1, 1, rowData.length)
           .setBackground("#FEE2E2")
@@ -230,7 +330,6 @@ function doPost(e) {
       status: "error",
       message: error.toString()
     })).setMimeType(ContentService.MimeType.JSON);
-
   } finally {
     lock.releaseLock();
   }
@@ -244,23 +343,64 @@ function doPost(e) {
 
   const handleSaveWebhook = (url: string) => {
     setWebhookUrl(url);
-    localStorage.setItem('tram_cam_xuc_webhook_url', url.trim());
+    localStorage.setItem(STORAGE_WEBHOOK_KEY, url.trim());
   };
 
-  const handleTriggerSync = async () => {
+  const handleSaveSheetUrl = (url: string) => {
+    setSheetUrl(url);
+    localStorage.setItem(STORAGE_SHEET_KEY, url.trim());
+  };
+
+  // 1. LẤY TOÀN BỘ DỮ LIỆU TỪ GOOGLE SHEETS / DRIVE VỀ ADMIN
+  const handlePullFromSheets = async () => {
+    setIsPulling(true);
+    setSyncStatus(null);
+
+    try {
+      const result = await fetchSubmissionsFromGoogleSheet({
+        webhookUrl: webhookUrl.trim(),
+        sheetUrl: sheetUrl.trim(),
+      });
+
+      if (result.success && result.submissions.length > 0) {
+        const merged = mergeSubmissions(submissions, result.submissions);
+        if (onSubmissionsUpdated) {
+          onSubmissionsUpdated(merged);
+        }
+        setSyncStatus({
+          success: true,
+          message: `🎉 ${result.message} Đã cập nhật ${merged.length} bài trên giao diện Admin!`,
+        });
+      } else {
+        setSyncStatus({
+          success: false,
+          message: result.message || 'Không tìm thấy bài chia sẻ nào trên Google Sheet. Thầy/Cô hãy kiểm tra đường link Google Sheet nhé!',
+        });
+      }
+    } catch (err: unknown) {
+      setSyncStatus({
+        success: false,
+        message: 'Lỗi khi lấy dữ liệu: ' + (err instanceof Error ? err.message : 'Vui lòng kiểm tra lại URL'),
+      });
+    } finally {
+      setIsPulling(false);
+    }
+  };
+
+  // 2. GỬI TẤT CẢ DỮ LIỆU LÊN GOOGLE SHEETS
+  const handlePushToSheets = async () => {
     if (!webhookUrl.trim()) {
       setSyncStatus({
         success: false,
-        message: 'Thầy/Cô vui lòng dán Webhook URL của Google Apps Script trước khi đồng bộ nhé!',
+        message: 'Thầy/Cô vui lòng dán Webhook URL của Google Apps Script trước khi gửi nhé!',
       });
       return;
     }
 
-    setIsSyncing(true);
+    setIsPushing(true);
     setSyncStatus(null);
 
     try {
-      // Đóng gói toàn bộ submissions cùng audioBase64 và photoBase64
       const packagedSubmissions = submissions.map((sub) => ({
         id: sub.id,
         secretCode: sub.secretCode,
@@ -271,8 +411,11 @@ function doPost(e) {
         title: sub.title,
         content: sub.content,
         audioBase64: sub.audioUrl && sub.audioUrl.startsWith('data:') ? sub.audioUrl : undefined,
+        audioUrl: sub.audioUrl,
         photoBase64: sub.imageUrl && sub.imageUrl.startsWith('data:') ? sub.imageUrl : undefined,
+        imageUrl: sub.imageUrl,
         videoBase64: sub.videoUrl && sub.videoUrl.startsWith('data:') ? sub.videoUrl : undefined,
+        videoUrl: sub.videoUrl,
         isUrgent: sub.isUrgent,
         sosIssue: sub.sosIssue,
         status: sub.status,
@@ -282,9 +425,7 @@ function doPost(e) {
 
       await fetch(webhookUrl.trim(), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8',
-        },
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
           source: 'Tram Cam Xuc Tu Trai Tim',
           syncTime: new Date().toISOString(),
@@ -295,7 +436,7 @@ function doPost(e) {
 
       setSyncStatus({
         success: true,
-        message: `Đã gửi toàn bộ ${submissions.length} bài chia sẻ (kèm audio & ảnh/video) tới Google Apps Script thành công! Các tệp đang được tải lên thư mục Drive "Trạm Cảm Xúc - Tệp Đính Kèm" và điền link vào trang tính.`,
+        message: `Đã gửi toàn bộ ${submissions.length} bài chia sẻ (kèm audio & ảnh/video) tới Google Apps Script & Google Sheet thành công!`,
       });
     } catch (err: unknown) {
       setSyncStatus({
@@ -303,15 +444,15 @@ function doPost(e) {
         message: 'Lỗi khi gửi dữ liệu: ' + (err instanceof Error ? err.message : 'Vui lòng kiểm tra lại URL'),
       });
     } finally {
-      setIsSyncing(false);
+      setIsPushing(false);
     }
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in">
-      <div className="relative w-full max-w-3xl bg-white rounded-3xl p-6 md:p-8 shadow-2xl border-4 border-emerald-200 my-8 max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 md:p-4 overflow-y-auto animate-in fade-in">
+      <div className="relative w-full max-w-3xl bg-white rounded-3xl p-5 md:p-7 shadow-2xl border-4 border-emerald-200 my-auto max-h-[92vh] overflow-y-auto">
         <button
           onClick={onClose}
           className="absolute top-4 right-4 w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 transition-colors cursor-pointer"
@@ -319,51 +460,106 @@ function doPost(e) {
           <X size={20} />
         </button>
 
-        <div className="flex items-center gap-3 mb-4">
+        <div className="flex items-center gap-3 mb-4 pr-10">
           <div className="p-3 bg-emerald-100 text-emerald-700 rounded-2xl shadow-xs">
             <Sheet className="w-7 h-7" />
           </div>
           <div>
-            <h3 className="text-xl md:text-2xl font-black text-slate-800 font-heading">
-              Tích Hợp Google Sheet & Google Drive
+            <h3 className="text-lg md:text-2xl font-black text-slate-800 font-heading">
+              Kết Nối & Tự Động Lấy Dữ Liệu Từ Google Sheet
             </h3>
             <p className="text-xs text-slate-500 font-medium">
-              Tự động lưu file ghi âm, hình ảnh/video vào Drive và điền link vào cột Google Sheet
+              Admin tự động đồng bộ tất cả bài chia sẻ từ Google Sheet & Drive về web hiển thị rõ ràng
             </p>
           </div>
         </div>
 
-        {/* Thẻ mô tả tính năng nổi bật */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 mb-4">
-          <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 flex items-center gap-2.5">
-            <Folder className="w-5 h-5 text-amber-600 shrink-0" />
-            <div className="text-[11px] font-bold text-amber-900 leading-tight">
-              Tự tạo thư mục <br />
-              <span className="font-extrabold text-amber-700">"Trạm Cảm Xúc - Tệp Đính Kèm"</span>
+        {/* 2 Nút hành động trực tiếp nổi bật */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
+          <button
+            type="button"
+            onClick={handlePullFromSheets}
+            disabled={isPulling}
+            className="p-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs shadow-lg transition-all flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-50"
+          >
+            <Download size={18} className={isPulling ? 'animate-bounce' : ''} />
+            <div className="text-left">
+              <div className="text-sm font-black">Lấy Dữ Liệu Từ Google Sheet Về Admin</div>
+              <div className="text-[10px] text-emerald-100 font-normal">Tự động tải tất cả bài học sinh gửi để hiển thị</div>
             </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={handlePushToSheets}
+            disabled={isPushing}
+            className="p-4 rounded-2xl bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-700 hover:to-indigo-700 text-white font-extrabold text-xs shadow-lg transition-all flex items-center justify-center gap-2.5 cursor-pointer disabled:opacity-50"
+          >
+            <Upload size={18} className={isPushing ? 'animate-bounce' : ''} />
+            <div className="text-left">
+              <div className="text-sm font-black">Gửi Toàn Bộ Bài Sang Google Sheet</div>
+              <div className="text-[10px] text-sky-100 font-normal">Đẩy {submissions.length} bài chia sẻ lên Google Drive & Trang tính</div>
+            </div>
+          </button>
+        </div>
+
+        {syncStatus && (
+          <div
+            className={`p-3.5 rounded-2xl text-xs font-semibold flex items-center gap-2.5 mb-4 animate-in fade-in ${
+              syncStatus.success
+                ? 'bg-emerald-50 border-2 border-emerald-300 text-emerald-900'
+                : 'bg-rose-50 border-2 border-rose-300 text-rose-900'
+            }`}
+          >
+            {syncStatus.success ? (
+              <CheckCircle2 size={20} className="shrink-0 text-emerald-600" />
+            ) : (
+              <AlertCircle size={20} className="shrink-0 text-rose-600" />
+            )}
+            <span className="leading-relaxed">{syncStatus.message}</span>
           </div>
-          <div className="p-3 rounded-2xl bg-sky-50 border border-sky-200 flex items-center gap-2.5">
-            <FileAudio className="w-5 h-5 text-sky-600 shrink-0" />
-            <div className="text-[11px] font-bold text-sky-900 leading-tight">
-              Giải mã Audio Base64 <br />
-              <span className="font-extrabold text-sky-700">Điền link Cột Link Ghi Âm</span>
-            </div>
+        )}
+
+        {/* Cấu hình kết nối Google Sheet URL & Webhook URL */}
+        <div className="mb-4 p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+          <div className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+            <Link2 size={16} className="text-emerald-600" />
+            <span>Địa Chỉ Bảng Tính Google Sheet Của Trường:</span>
           </div>
-          <div className="p-3 rounded-2xl bg-purple-50 border border-purple-200 flex items-center gap-2.5">
-            <FileImage className="w-5 h-5 text-purple-600 shrink-0" />
-            <div className="text-[11px] font-bold text-purple-900 leading-tight">
-              Giải mã Ảnh/Video Base64 <br />
-              <span className="font-extrabold text-purple-700">Điền link Cột Link Hình Ảnh</span>
-            </div>
+
+          <div>
+            <label className="block text-[11px] font-bold text-slate-600 mb-1">
+              1. Đường link Google Sheet của trường (Chia sẻ quyền "Bất kỳ ai có đường liên kết đều có thể xem"):
+            </label>
+            <input
+              type="text"
+              value={sheetUrl}
+              onChange={(e) => handleSaveSheetUrl(e.target.value)}
+              placeholder="Ví dụ: https://docs.google.com/spreadsheets/d/1XyZ.../edit"
+              className="w-full px-3.5 py-2.5 rounded-xl border-2 border-slate-200 focus:border-emerald-500 text-xs font-mono bg-white"
+            />
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-bold text-slate-600 mb-1">
+              2. Webhook URL Google Apps Script (Nhận & gửi dữ liệu trực tiếp 2 chiều):
+            </label>
+            <input
+              type="url"
+              value={webhookUrl}
+              onChange={(e) => handleSaveWebhook(e.target.value)}
+              placeholder="https://script.google.com/macros/s/AKfycb.../exec"
+              className="w-full px-3.5 py-2.5 rounded-xl border-2 border-slate-200 focus:border-emerald-500 text-xs font-mono bg-white"
+            />
           </div>
         </div>
 
-        {/* Khung mã nguồn Code.gs */}
+        {/* Khung mã nguồn Code.gs nâng cấp 2 chiều (doGet + doPost) */}
         <div className="mb-4">
           <div className="flex items-center justify-between mb-1.5">
             <label className="text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
               <Sparkles size={14} className="text-amber-500" />
-              <span>Mã Nguồn Chuẩn Cho Google Sheet (Code.gs)</span>
+              <span>Mã Nguồn Chuẩn Apps Script Mới (Có Cả doGet và doPost)</span>
             </label>
             <button
               type="button"
@@ -371,59 +567,22 @@ function doPost(e) {
               className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-sm flex items-center gap-1.5 transition-all cursor-pointer"
             >
               {copiedScript ? <Check size={14} /> : <Copy size={14} />}
-              <span>{copiedScript ? 'Đã sao chép vào bộ nhớ tạm!' : 'Bấm để sao chép Code.gs'}</span>
+              <span>{copiedScript ? 'Đã sao chép vào bộ nhớ!' : 'Bấm để sao chép Code.gs'}</span>
             </button>
           </div>
 
           <div className="relative rounded-2xl overflow-hidden border border-slate-700 bg-slate-900 text-emerald-300 p-4 font-mono text-[11px] max-h-48 overflow-y-auto leading-relaxed shadow-inner">
             <pre>{appsScriptCode}</pre>
           </div>
-          <p className="text-[11px] text-slate-500 mt-1 font-medium">
-            (Thầy/Cô chỉ cần mở Google Sheet &gt; Tiện ích mở rộng &gt; Apps Script &gt; Dán đè toàn bộ mã &gt; Triển khai Web App quyền "Bất kỳ ai")
+          <p className="text-[11px] text-slate-500 mt-1.5 font-medium leading-relaxed">
+            💡 <strong>Hướng dẫn cập nhật:</strong> Mở Google Sheet &gt; <em>Tiện ích mở rộng</em> &gt; <em>Apps Script</em> &gt; Dán đè toàn bộ mã &gt; Bấm <em>Triển khai</em> &gt; <em>Quản lý bản triển khai</em> &gt; Chỉnh sửa phiên bản mới &gt; Quyền truy cập: <em>"Bất kỳ ai" (Anyone)</em>.
           </p>
         </div>
-
-        {/* Ô cấu hình Webhook URL */}
-        <div className="mb-4 p-4 rounded-2xl bg-slate-50 border border-slate-200">
-          <label className="block text-xs font-bold text-slate-800 mb-1.5">
-            Dán Webhook URL Google Apps Script vào đây:
-          </label>
-          <div className="flex gap-2">
-            <input
-              type="url"
-              value={webhookUrl}
-              onChange={(e) => handleSaveWebhook(e.target.value)}
-              placeholder="https://script.google.com/macros/s/AKfycb.../exec"
-              className="flex-1 px-3.5 py-2.5 rounded-xl border-2 border-slate-200 focus:border-emerald-500 text-xs font-mono bg-white"
-            />
-            <button
-              onClick={handleTriggerSync}
-              disabled={isSyncing}
-              className="px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs rounded-xl shadow-md transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
-            >
-              <RefreshCw size={15} className={isSyncing ? 'animate-spin' : ''} />
-              <span>{isSyncing ? 'Đang gửi...' : 'Đồng bộ ngay'}</span>
-            </button>
-          </div>
-        </div>
-
-        {syncStatus && (
-          <div
-            className={`p-3.5 rounded-2xl text-xs font-semibold flex items-center gap-2 mb-4 ${
-              syncStatus.success
-                ? 'bg-emerald-50 border border-emerald-200 text-emerald-800'
-                : 'bg-rose-50 border border-rose-200 text-rose-800'
-            }`}
-          >
-            {syncStatus.success ? <CheckCircle2 size={18} className="shrink-0 text-emerald-600" /> : <AlertCircle size={18} className="shrink-0 text-rose-600" />}
-            <span>{syncStatus.message}</span>
-          </div>
-        )}
 
         <div className="flex justify-end gap-3 pt-3 border-t border-slate-100">
           <button
             onClick={onClose}
-            className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-colors cursor-pointer"
+            className="px-6 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-colors cursor-pointer"
           >
             Đóng
           </button>

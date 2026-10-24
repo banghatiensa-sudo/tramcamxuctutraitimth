@@ -1,24 +1,39 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Lock, Unlock, Download, Search, Filter, ShieldAlert, 
   MessageSquare, Volume2, Image as ImageIcon, Video, CheckCircle, 
   Clock, AlertTriangle, Eye, ArrowLeft, Send, Sparkles, X, 
-  Play, Pause, Award, KeyRound, Check, Mic, Square, RotateCcw
+  Play, Pause, Award, KeyRound, Check, Mic, Square, RotateCcw,
+  Sheet, RefreshCw, ExternalLink, Link2, Folder, CheckCircle2
 } from 'lucide-react';
 import { StudentSubmission, ProcessingStatus, EmotionType, EmotionFeedback } from '../../types/emotion';
 import { exportSubmissionsToCsv } from '../../utils/exportCsv';
 import { EmotionIconMap } from '../chibi/ChibiEmotions';
 import { useAudioRecorder } from '../../utils/useAudioRecorder';
+import { GoogleSheetSyncModal } from './GoogleSheetSyncModal';
+import { 
+  fetchSubmissionsFromGoogleSheet, 
+  mergeSubmissions, 
+  STORAGE_LAST_SYNC_KEY 
+} from '../../utils/googleSheetsSync';
+import { 
+  isGoogleDriveUrl, 
+  getDriveThumbnailUrl, 
+  getDriveDirectStreamUrl, 
+  getDrivePreviewUrl 
+} from '../../utils/googleDriveHelpers';
 
 interface TeacherDashboardProps {
   submissions: StudentSubmission[];
   onUpdateSubmission: (updated: StudentSubmission) => void;
+  onSubmissionsUpdated?: (merged: StudentSubmission[]) => void;
   onExitDashboard: () => void;
 }
 
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   submissions,
   onUpdateSubmission,
+  onSubmissionsUpdated,
   onExitDashboard,
 }) => {
   // Authentication credentials stored in localStorage (default: admin / tramcamxuc2026)
@@ -66,7 +81,67 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   // Audio Recorder for Teacher (dành cho học sinh lớp 1, 2)
   const teacherRecorder = useAudioRecorder();
   const [isPlayingTeacherPreview, setIsPlayingTeacherPreview] = useState(false);
-  const teacherPreviewAudioRef = React.useRef<HTMLAudioElement | null>(null);
+  const teacherPreviewAudioRef = useRef<HTMLAudioElement | null>(null);
+  // Google Sheets Auto-Sync & Real-Time Sync states
+  const [isGoogleSheetModalOpen, setIsGoogleSheetModalOpen] = useState(false);
+  const [isSyncingSheets, setIsSyncingSheets] = useState(false);
+  const [lastSyncText, setLastSyncText] = useState<string>(() => {
+    return localStorage.getItem(STORAGE_LAST_SYNC_KEY) || 'Tự động kiểm tra';
+  });
+  const [syncFeedback, setSyncFeedback] = useState<{ message: string; isError?: boolean } | null>(null);
+
+  // Hàm đồng bộ nhanh từ Google Sheets
+  const handleQuickSync = async (isManual = true) => {
+    setIsSyncingSheets(true);
+    if (isManual) setSyncFeedback(null);
+
+    try {
+      const result = await fetchSubmissionsFromGoogleSheet();
+      if (result.success && result.submissions.length > 0) {
+        const merged = mergeSubmissions(submissions, result.submissions);
+        if (onSubmissionsUpdated) {
+          onSubmissionsUpdated(merged);
+        }
+        const nowTime = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+        const timeText = `Lúc ${nowTime} (${result.submissions.length} bài thực tế)`;
+        setLastSyncText(timeText);
+        localStorage.setItem(STORAGE_LAST_SYNC_KEY, timeText);
+
+        if (isManual) {
+          setSyncFeedback({
+            message: `🎉 Đã tự động kết nối và lấy ${result.submissions.length} bài chia sẻ thực tế từ Google Sheet!`,
+          });
+          setTimeout(() => setSyncFeedback(null), 5000);
+        }
+      } else if (isManual) {
+        setSyncFeedback({
+          message: result.message || 'Chưa tìm thấy bài mới trên Google Sheet. Thầy/Cô hãy kiểm tra đường link Google Sheet nhé!',
+          isError: true,
+        });
+        setTimeout(() => setSyncFeedback(null), 6000);
+      }
+    } catch (err: any) {
+      if (isManual) {
+        setSyncFeedback({
+          message: 'Lỗi đồng bộ: ' + (err?.message || 'Không thể kết nối'),
+          isError: true,
+        });
+      }
+    } finally {
+      setIsSyncingSheets(false);
+    }
+  };
+
+  // Tự động đồng bộ ngay khi Thầy Cô đăng nhập và định kỳ mỗi 30 giây
+  useEffect(() => {
+    if (isAuthenticated) {
+      handleQuickSync(false);
+      const interval = setInterval(() => {
+        handleQuickSync(false);
+      }, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [isAuthenticated]);
 
   const stickers = [
     '🤗 Cái Ôm Ấm Áp',
@@ -133,9 +208,22 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       if (audioElement) {
         audioElement.pause();
       }
-      const audio = new Audio(url);
+      const streamUrl = isGoogleDriveUrl(url) ? getDriveDirectStreamUrl(url) : url;
+      const audio = new Audio(streamUrl);
       audio.onended = () => setPlayingAudioId(null);
-      audio.play();
+      audio.onerror = () => {
+        // If Google Drive link fails in direct audio stream, open in new tab
+        if (isGoogleDriveUrl(url)) {
+          window.open(getDrivePreviewUrl(url), '_blank');
+        }
+        setPlayingAudioId(null);
+      };
+      audio.play().catch(() => {
+        if (isGoogleDriveUrl(url)) {
+          window.open(getDrivePreviewUrl(url), '_blank');
+        }
+        setPlayingAudioId(null);
+      });
       setAudioElement(audio);
       setPlayingAudioId(id);
     }
@@ -317,27 +405,73 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           </div>
         </div>
 
-        {/* Nút hành động: Xuất CSV 8 cột & Đổi mật khẩu (ĐÃ ẨN NÚT ĐỒNG BỘ GOOGLE THEO YÊU CẦU) */}
-        <div className="flex items-center gap-2.5">
+        {/* Nút hành động */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Nút Lấy dữ liệu thực tế từ Google Sheet */}
+          <button
+            onClick={() => handleQuickSync(true)}
+            disabled={isSyncingSheets}
+            className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs shadow-sm flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+            title="Lấy ngay toàn bộ bài chia sẻ thực tế từ Google Sheet"
+          >
+            <RefreshCw size={14} className={isSyncingSheets ? 'animate-spin' : ''} />
+            <span>{isSyncingSheets ? 'Đang lấy dữ liệu...' : 'Đồng Bộ Google Sheet'}</span>
+          </button>
+
+
           <button
             onClick={() => exportSubmissionsToCsv(submissions)}
-            className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-xs flex items-center gap-1.5 transition-all cursor-pointer"
+            className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold text-xs border border-slate-200 shadow-xs flex items-center gap-1.5 transition-all cursor-pointer"
             title="Xuất bảng tính Excel CSV chuẩn 8 cột tiếng Việt có dấu"
           >
-            <Download size={15} />
-            <span>Xuất Excel / CSV (8 Cột)</span>
+            <Download size={14} />
+            <span>Xuất CSV (8 Cột)</span>
           </button>
 
           <button
             onClick={() => setIsChangePasswordModalOpen(true)}
-            className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-amber-100 text-slate-700 hover:text-amber-800 font-extrabold text-xs border border-slate-200 flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+            className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-amber-100 text-slate-700 hover:text-amber-800 font-extrabold text-xs border border-slate-200 flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
             title="Thay đổi mật khẩu quản trị tài khoản"
           >
-            <KeyRound size={15} className="text-amber-600" />
+            <KeyRound size={14} className="text-amber-600" />
             <span>Đổi Mật Khẩu</span>
           </button>
         </div>
       </header>
+
+      {/* Dải thông báo trạng thái đồng bộ Google Sheet thực tế */}
+      <div className="bg-emerald-50/80 border-b border-emerald-200 px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-900 font-semibold">
+        <div className="flex items-center gap-2">
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+          <span>
+            Hệ thống Admin đang tự động đồng bộ tất cả dữ liệu thực từ Google Sheet / Drive: <strong className="text-emerald-950 font-extrabold">{lastSyncText}</strong>
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => handleQuickSync(true)}
+          className="text-[11px] text-emerald-700 hover:text-emerald-900 underline font-bold cursor-pointer"
+        >
+          Nhấn để làm mới ngay
+        </button>
+      </div>
+
+      {syncFeedback && (
+        <div
+          className={`mx-4 mt-3 p-3 rounded-2xl text-xs font-bold flex items-center gap-2 shadow-xs animate-in fade-in ${
+            syncFeedback.isError
+              ? 'bg-rose-50 border border-rose-200 text-rose-800'
+              : 'bg-emerald-100 border border-emerald-300 text-emerald-950'
+          }`}
+        >
+          {syncFeedback.isError ? (
+            <AlertTriangle size={16} className="text-rose-600 shrink-0" />
+          ) : (
+            <CheckCircle2 size={16} className="text-emerald-700 shrink-0" />
+          )}
+          <span>{syncFeedback.message}</span>
+        </div>
+      )}
 
       {/* Main Content */}
       <main className="p-4 md:p-8 max-w-7xl mx-auto space-y-6">
@@ -532,41 +666,85 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         <td className="px-3 py-3.5 whitespace-nowrap">
                           <div className="flex items-center gap-2">
                             {item.audioUrl && (
-                              <button
-                                onClick={() => handleToggleAudio(item.id, item.audioUrl!)}
-                                className={`px-2.5 py-1.5 rounded-xl font-bold text-[11px] flex items-center gap-1 shadow-xs transition-all cursor-pointer ${
-                                  playingAudioId === item.id
-                                    ? 'bg-rose-500 text-white animate-pulse'
-                                    : 'bg-sky-100 text-sky-700 hover:bg-sky-200'
-                                }`}
-                              >
-                                {playingAudioId === item.id ? <Pause size={12} /> : <Play size={12} />}
-                                <span>{item.audioDuration ? `${item.audioDuration}s` : 'Ghi âm'}</span>
-                              </button>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => handleToggleAudio(item.id, item.audioUrl!)}
+                                  className={`px-2.5 py-1.5 rounded-xl font-bold text-[11px] flex items-center gap-1 shadow-xs transition-all cursor-pointer ${
+                                    playingAudioId === item.id
+                                      ? 'bg-rose-500 text-white animate-pulse'
+                                      : 'bg-sky-100 text-sky-700 hover:bg-sky-200'
+                                  }`}
+                                  title={isGoogleDriveUrl(item.audioUrl) ? "Ghi âm lưu trữ trên Google Drive" : "Ghi âm"}
+                                >
+                                  {playingAudioId === item.id ? <Pause size={12} /> : <Play size={12} />}
+                                  <span>{item.audioDuration ? `${item.audioDuration}s` : 'Ghi âm'}</span>
+                                </button>
+                                {isGoogleDriveUrl(item.audioUrl) && (
+                                  <a
+                                    href={getDrivePreviewUrl(item.audioUrl)}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="p-1 text-slate-400 hover:text-sky-600 transition-colors"
+                                    title="Mở file ghi âm trên Google Drive"
+                                  >
+                                    <ExternalLink size={12} />
+                                  </a>
+                                )}
+                              </div>
                             )}
 
                             {item.imageUrl && (
-                              <button
-                                onClick={() => setZoomedImage(item.imageUrl!)}
-                                className="p-1 rounded-lg border border-slate-200 hover:border-purple-400 overflow-hidden w-9 h-9 shrink-0 relative group cursor-pointer"
-                                title="Bấm để phóng to tranh vẽ / ảnh chụp"
-                              >
-                                <img src={item.imageUrl} alt="Art" className="w-full h-full object-cover" />
-                                <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white">
-                                  <Eye size={12} />
-                                </div>
-                              </button>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => setZoomedImage(isGoogleDriveUrl(item.imageUrl!) ? getDriveThumbnailUrl(item.imageUrl!) : item.imageUrl!)}
+                                  className="p-1 rounded-lg border border-slate-200 hover:border-purple-400 overflow-hidden w-9 h-9 shrink-0 relative group cursor-pointer"
+                                  title="Bấm để phóng to tranh vẽ / ảnh chụp"
+                                >
+                                  <img 
+                                    src={isGoogleDriveUrl(item.imageUrl) ? getDriveThumbnailUrl(item.imageUrl) : item.imageUrl} 
+                                    alt="Art" 
+                                    className="w-full h-full object-cover" 
+                                  />
+                                  <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white">
+                                    <Eye size={12} />
+                                  </div>
+                                </button>
+                                {isGoogleDriveUrl(item.imageUrl) && (
+                                  <a
+                                    href={getDrivePreviewUrl(item.imageUrl)}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="p-1 text-slate-400 hover:text-purple-600 transition-colors"
+                                    title="Mở tranh ảnh trên Google Drive"
+                                  >
+                                    <ExternalLink size={12} />
+                                  </a>
+                                )}
+                              </div>
                             )}
 
                             {item.videoUrl && (
-                              <button
-                                onClick={() => setActiveVideoModal(item.videoUrl!)}
-                                className="px-2.5 py-1.5 rounded-xl font-bold text-[11px] bg-purple-100 text-purple-700 hover:bg-purple-200 flex items-center gap-1 cursor-pointer"
-                                title="Xem video của học sinh"
-                              >
-                                <Video size={13} />
-                                <span>Video {item.videoDuration ? `${item.videoDuration}s` : ''}</span>
-                              </button>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => setActiveVideoModal(item.videoUrl!)}
+                                  className="px-2.5 py-1.5 rounded-xl font-bold text-[11px] bg-purple-100 text-purple-700 hover:bg-purple-200 flex items-center gap-1 cursor-pointer"
+                                  title="Xem video của học sinh"
+                                >
+                                  <Video size={13} />
+                                  <span>Video {item.videoDuration ? `${item.videoDuration}s` : ''}</span>
+                                </button>
+                                {isGoogleDriveUrl(item.videoUrl) && (
+                                  <a
+                                    href={getDrivePreviewUrl(item.videoUrl)}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="p-1 text-slate-400 hover:text-purple-600 transition-colors"
+                                    title="Mở video trên Google Drive"
+                                  >
+                                    <ExternalLink size={12} />
+                                  </a>
+                                )}
+                              </div>
                             )}
 
                             {!item.audioUrl && !item.imageUrl && !item.videoUrl && (
@@ -763,51 +941,102 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
               {/* Nếu có ghi âm ban đầu */}
               {selectedSubmission.audioUrl && (
-                <div className="p-3 bg-white rounded-xl border border-slate-200 flex items-center justify-between mb-2">
+                <div className="p-3 bg-white rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-2 mb-2">
                   <div className="flex items-center gap-2 text-xs font-bold text-sky-700">
                     <Volume2 size={16} />
                     <span>File ghi âm giọng nói ({selectedSubmission.audioDuration || 0}s)</span>
+                    {isGoogleDriveUrl(selectedSubmission.audioUrl) && (
+                      <span className="px-2 py-0.5 rounded-md bg-sky-100 text-[10px] text-sky-800 font-semibold">
+                        Google Drive
+                      </span>
+                    )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleToggleAudio(selectedSubmission.id, selectedSubmission.audioUrl!)}
-                    className="px-3 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
-                  >
-                    {playingAudioId === selectedSubmission.id ? <Pause size={14} /> : <Play size={14} />}
-                    <span>{playingAudioId === selectedSubmission.id ? 'Tạm dừng' : 'Nghe ghi âm'}</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleAudio(selectedSubmission.id, selectedSubmission.audioUrl!)}
+                      className="px-3 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                    >
+                      {playingAudioId === selectedSubmission.id ? <Pause size={14} /> : <Play size={14} />}
+                      <span>{playingAudioId === selectedSubmission.id ? 'Tạm dừng' : 'Nghe ghi âm'}</span>
+                    </button>
+                    {isGoogleDriveUrl(selectedSubmission.audioUrl) && (
+                      <a
+                        href={getDrivePreviewUrl(selectedSubmission.audioUrl)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs flex items-center gap-1"
+                        title="Mở file ghi âm trên Google Drive"
+                      >
+                        <ExternalLink size={12} />
+                        <span>Mở Drive</span>
+                      </a>
+                    )}
+                  </div>
                 </div>
               )}
 
               {/* Nếu bé có gửi ghi âm nhắn lại */}
               {selectedSubmission.studentReplyAudioUrl && (
-                <div className="p-3 bg-pink-50 rounded-xl border border-pink-200 flex items-center justify-between mb-2">
+                <div className="p-3 bg-pink-50 rounded-xl border border-pink-200 flex flex-wrap items-center justify-between gap-2 mb-2">
                   <div className="flex items-center gap-2 text-xs font-bold text-pink-700">
                     <Volume2 size={16} />
-                    <span>Giọng nói bé lớp 1, 2 nhắn lại cho Thầy Cô ({selectedSubmission.studentReplyDuration || 0}s)</span>
+                    <span>Giọng nói bé nhắn lại ({selectedSubmission.studentReplyDuration || 0}s)</span>
+                    {isGoogleDriveUrl(selectedSubmission.studentReplyAudioUrl) && (
+                      <span className="px-2 py-0.5 rounded-md bg-pink-100 text-[10px] text-pink-800 font-semibold">
+                        Google Drive
+                      </span>
+                    )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleToggleAudio('reply-' + selectedSubmission.id, selectedSubmission.studentReplyAudioUrl!)}
-                    className="px-3 py-1.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
-                  >
-                    {playingAudioId === 'reply-' + selectedSubmission.id ? <Pause size={14} /> : <Play size={14} />}
-                    <span>{playingAudioId === 'reply-' + selectedSubmission.id ? 'Tạm dừng' : 'Nghe giọng bé'}</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleAudio('reply-' + selectedSubmission.id, selectedSubmission.studentReplyAudioUrl!)}
+                      className="px-3 py-1.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
+                    >
+                      {playingAudioId === 'reply-' + selectedSubmission.id ? <Pause size={14} /> : <Play size={14} />}
+                      <span>{playingAudioId === 'reply-' + selectedSubmission.id ? 'Tạm dừng' : 'Nghe giọng bé'}</span>
+                    </button>
+                    {isGoogleDriveUrl(selectedSubmission.studentReplyAudioUrl) && (
+                      <a
+                        href={getDrivePreviewUrl(selectedSubmission.studentReplyAudioUrl)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-2.5 py-1.5 rounded-xl bg-pink-100 hover:bg-pink-200 text-pink-800 font-bold text-xs flex items-center gap-1"
+                        title="Mở file trên Google Drive"
+                      >
+                        <ExternalLink size={12} />
+                        <span>Mở Drive</span>
+                      </a>
+                    )}
+                  </div>
                 </div>
               )}
 
               {/* Nếu có tranh ảnh */}
               {selectedSubmission.imageUrl && (
                 <div className="mt-2">
-                  <div className="text-[11px] font-bold text-purple-700 mb-1 flex items-center gap-1">
-                    <ImageIcon size={14} />
-                    <span>Tranh vẽ / Ảnh chụp đính kèm:</span>
+                  <div className="text-[11px] font-bold text-purple-700 mb-1 flex items-center justify-between">
+                    <div className="flex items-center gap-1">
+                      <ImageIcon size={14} />
+                      <span>Tranh vẽ / Ảnh chụp đính kèm:</span>
+                    </div>
+                    {isGoogleDriveUrl(selectedSubmission.imageUrl) && (
+                      <a
+                        href={getDrivePreviewUrl(selectedSubmission.imageUrl)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs text-purple-600 hover:text-purple-800 font-bold flex items-center gap-1 underline"
+                      >
+                        <ExternalLink size={12} />
+                        <span>Xem ảnh gốc trên Google Drive</span>
+                      </a>
+                    )}
                   </div>
                   <img
-                    src={selectedSubmission.imageUrl}
+                    src={isGoogleDriveUrl(selectedSubmission.imageUrl) ? getDriveThumbnailUrl(selectedSubmission.imageUrl) : selectedSubmission.imageUrl}
                     alt="Art"
-                    onClick={() => setZoomedImage(selectedSubmission.imageUrl!)}
+                    onClick={() => setZoomedImage(isGoogleDriveUrl(selectedSubmission.imageUrl!) ? getDriveThumbnailUrl(selectedSubmission.imageUrl!) : selectedSubmission.imageUrl!)}
                     className="max-h-48 rounded-xl border border-slate-200 object-contain bg-white cursor-pointer hover:opacity-90"
                   />
                 </div>
@@ -816,17 +1045,41 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               {/* Nếu có video */}
               {selectedSubmission.videoUrl && (
                 <div className="mt-2">
-                  <div className="text-[11px] font-bold text-purple-700 mb-1 flex items-center gap-1">
-                    <Video size={14} />
-                    <span>Video clip học sinh quay ({selectedSubmission.videoDuration || 0}s):</span>
+                  <div className="text-[11px] font-bold text-purple-700 mb-1 flex items-center justify-between">
+                    <div className="flex items-center gap-1">
+                      <Video size={14} />
+                      <span>Video clip học sinh ({selectedSubmission.videoDuration || 0}s):</span>
+                    </div>
+                    {isGoogleDriveUrl(selectedSubmission.videoUrl) && (
+                      <a
+                        href={getDrivePreviewUrl(selectedSubmission.videoUrl)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs text-purple-600 hover:text-purple-800 font-bold flex items-center gap-1 underline"
+                      >
+                        <ExternalLink size={12} />
+                        <span>Mở trực tiếp trên Google Drive</span>
+                      </a>
+                    )}
                   </div>
-                  <video
-                    src={selectedSubmission.videoUrl}
-                    controls
-                    playsInline
-                    preload="metadata"
-                    className="max-h-48 rounded-xl border border-slate-200 bg-black"
-                  />
+                  {isGoogleDriveUrl(selectedSubmission.videoUrl) ? (
+                    <div className="relative rounded-xl overflow-hidden border border-slate-200 bg-slate-900 aspect-video max-h-60">
+                      <iframe
+                        src={getDrivePreviewUrl(selectedSubmission.videoUrl)}
+                        className="w-full h-full border-0"
+                        allow="autoplay"
+                        title="Video Google Drive"
+                      />
+                    </div>
+                  ) : (
+                    <video
+                      src={selectedSubmission.videoUrl}
+                      controls
+                      playsInline
+                      preload="metadata"
+                      className="max-h-48 rounded-xl border border-slate-200 bg-black"
+                    />
+                  )}
                 </div>
               )}
             </div>
@@ -1051,16 +1304,49 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-xs p-4 animate-in fade-in"
         >
           <div className="relative max-w-3xl w-full bg-black rounded-3xl overflow-hidden shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <video src={activeVideoModal} controls playsInline autoPlay className="w-full max-h-[80vh] object-contain" />
+            {isGoogleDriveUrl(activeVideoModal) ? (
+              <div className="flex flex-col items-center">
+                <div className="w-full aspect-video bg-black">
+                  <iframe
+                    src={getDrivePreviewUrl(activeVideoModal)}
+                    className="w-full h-full border-0"
+                    allow="autoplay"
+                    title="Video Google Drive Preview"
+                  />
+                </div>
+                <div className="p-3 bg-slate-900 w-full flex items-center justify-between">
+                  <span className="text-xs text-slate-300 font-medium">Video lưu trữ trên Google Drive</span>
+                  <a
+                    href={getDrivePreviewUrl(activeVideoModal)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs flex items-center gap-1.5"
+                  >
+                    <ExternalLink size={14} />
+                    <span>Mở tab mới trên Google Drive</span>
+                  </a>
+                </div>
+              </div>
+            ) : (
+              <video src={activeVideoModal} controls playsInline autoPlay className="w-full max-h-[80vh] object-contain" />
+            )}
             <button
               onClick={() => setActiveVideoModal(null)}
-              className="absolute top-3 right-3 p-2 bg-black/60 hover:bg-black/90 text-white rounded-full cursor-pointer"
+              className="absolute top-3 right-3 p-2 bg-black/60 hover:bg-black/90 text-white rounded-full cursor-pointer z-10"
             >
               <X size={20} />
             </button>
           </div>
         </div>
       )}
+
+      {/* Modal Cài đặt & Quản lý đồng bộ Google Sheets / Drive */}
+      <GoogleSheetSyncModal
+        isOpen={isGoogleSheetModalOpen}
+        onClose={() => setIsGoogleSheetModalOpen(false)}
+        submissions={submissions}
+        onSubmissionsUpdated={onSubmissionsUpdated}
+      />
     </div>
   );
 };
