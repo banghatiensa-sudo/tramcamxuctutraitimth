@@ -1,7 +1,7 @@
 import { StudentSubmission, EmotionType, ProcessingStatus, SubmissionCategory } from '../types/emotion';
 
 export const DEFAULT_WEBHOOK_URL =
-  'https://script.google.com/macros/s/AKfycbwdLkyRxhPvjDvtk6K-fbrV6zInYP_hgPE0fd_lprNoPuNB6Nbum1cznD_jtXA_x34/exec';
+  'https://script.google.com/macros/s/AKfycbzuEvZHEoLqKjI15d9XbR0GvHMGFXo_cZRO9YYF_Zz3B9un-bbudJJAxTZIxdDzqbc/exec';
 
 export const STORAGE_WEBHOOK_KEY = 'tram_cam_xuc_webhook_url';
 export const STORAGE_SHEET_KEY = 'tram_cam_xuc_sheet_url';
@@ -9,7 +9,13 @@ export const STORAGE_LAST_SYNC_KEY = 'tram_cam_xuc_last_sync_time';
 
 export function getSavedWebhookUrl(): string {
   try {
-    return localStorage.getItem(STORAGE_WEBHOOK_KEY) || DEFAULT_WEBHOOK_URL;
+    const stored = localStorage.getItem(STORAGE_WEBHOOK_KEY);
+    // Tự động chuyển đổi nếu chưa có hoặc đang chứa URL cũ
+    if (!stored || stored.includes('AKfycbwdLkyRxhPvjDvtk6K-fbrV6zInYP_hgPE0fd_lprNoPuNB6Nbum1cznD_jtXA_x34')) {
+      localStorage.setItem(STORAGE_WEBHOOK_KEY, DEFAULT_WEBHOOK_URL);
+      return DEFAULT_WEBHOOK_URL;
+    }
+    return stored;
   } catch {
     return DEFAULT_WEBHOOK_URL;
   }
@@ -466,15 +472,23 @@ export async function fetchSubmissionsFromGoogleSheet(options?: {
         ? `${webhookUrl}&action=get_submissions&t=${Date.now()}`
         : `${webhookUrl}?action=get_submissions&t=${Date.now()}`;
 
-      const res = await fetch(fetchUrl);
+      const res = await fetch(fetchUrl, { redirect: 'follow' });
       if (res.ok) {
         const data = await res.json();
-        if (data && data.submissions && Array.isArray(data.submissions) && data.submissions.length > 0) {
-          return {
-            success: true,
-            submissions: data.submissions,
-            message: `Đã lấy thành công ${data.submissions.length} bài từ Google Apps Script Webhook!`,
-          };
+        if (data && data.submissions && Array.isArray(data.submissions)) {
+          if (data.submissions.length > 0) {
+            return {
+              success: true,
+              submissions: data.submissions,
+              message: `Đã kết nối và lấy thành công ${data.submissions.length} bài thực tế từ Google Apps Script!`,
+            };
+          } else {
+            return {
+              success: true,
+              submissions: [],
+              message: 'Đã kết nối Google Apps Script thành công (Hiện chưa có bài chia sẻ nào mới).',
+            };
+          }
         }
       }
     } catch (e) {
@@ -486,7 +500,7 @@ export async function fetchSubmissionsFromGoogleSheet(options?: {
     return {
       success: false,
       submissions: [],
-      message: 'Chưa có đường link Google Sheet. Thầy Cô vui lòng dán đường link Google Sheet của trường để Admin tự động tải tất cả dữ liệu thực tế về nhé!',
+      message: 'Hệ thống đang kết nối với Google Apps Script Webhook nhưng chưa nhận được dữ liệu. Vui lòng bấm "Lấy Dữ Liệu Về Admin" để làm mới.',
     };
   }
 

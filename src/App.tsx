@@ -90,17 +90,24 @@ export default function App() {
       })
       .catch(() => {});
 
-    // 2. Tự động lấy tất cả dữ liệu thực từ Google Sheet
-    fetchSubmissionsFromGoogleSheet()
-      .then((res) => {
-        if (res.success && res.submissions && res.submissions.length > 0) {
-          const realData = filterOnlyRealSubmissions(res.submissions);
-          if (realData.length > 0) {
-            setSubmissions((prev) => mergeSubmissions(prev, realData));
+    // 2. Tự động lấy tất cả dữ liệu thực từ Google Sheet / Apps Script
+    const pullLatestData = () => {
+      fetchSubmissionsFromGoogleSheet()
+        .then((res) => {
+          if (res.success && res.submissions && res.submissions.length > 0) {
+            const realData = filterOnlyRealSubmissions(res.submissions);
+            if (realData.length > 0) {
+              setSubmissions((prev) => mergeSubmissions(prev, realData));
+            }
           }
-        }
-      })
-      .catch(() => {});
+        })
+        .catch(() => {});
+    };
+
+    pullLatestData();
+    // Tự động cập nhật mỗi 15 giây theo yêu cầu
+    const autoSyncInterval = setInterval(pullLatestData, 15000);
+    return () => clearInterval(autoSyncInterval);
   }, []);
 
   // Tự động lưu an toàn vào IndexedDB (dung lượng không giới hạn) và LocalStorage (được lọc quota an toàn)
@@ -137,8 +144,8 @@ export default function App() {
     message: string;
   } | null>(null);
 
-  // Teacher dashboard toggle
-  const [isTeacherDashboardOpen, setIsTeacherDashboardOpen] = useState(false);
+  // Teacher dashboard toggle (Mặc định vào thẳng trang Quản trị Admin theo yêu cầu)
+  const [isTeacherDashboardOpen, setIsTeacherDashboardOpen] = useState(true);
 
   // Helper generate random secret code
   const generateSecretCode = (isUrgent: boolean) => {

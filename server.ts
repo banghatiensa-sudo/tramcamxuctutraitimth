@@ -99,7 +99,7 @@ app.post('/api/submissions', async (req, res) => {
     // Đồng bộ sang Google Apps Script trong nền
     const webhookUrl =
       process.env.APPS_SCRIPT_WEBHOOK_URL ||
-      'https://script.google.com/macros/s/AKfycbwdLkyRxhPvjDvtk6K-fbrV6zInYP_hgPE0fd_lprNoPuNB6Nbum1cznD_jtXA_x34/exec';
+      'https://script.google.com/macros/s/AKfycbzuEvZHEoLqKjI15d9XbR0GvHMGFXo_cZRO9YYF_Zz3B9un-bbudJJAxTZIxdDzqbc/exec';
 
     if (webhookUrl) {
       fetch(webhookUrl, {
@@ -143,7 +143,9 @@ app.put('/api/submissions/:id', (req, res) => {
 // API: Tự động kết nối và lấy dữ liệu trực tiếp từ Google Sheets / Google Apps Script
 app.post('/api/sync-google-sheets', async (req, res) => {
   try {
-    const { webhookUrl, sheetUrl } = req.body;
+    const defaultWebhook = 'https://script.google.com/macros/s/AKfycbzuEvZHEoLqKjI15d9XbR0GvHMGFXo_cZRO9YYF_Zz3B9un-bbudJJAxTZIxdDzqbc/exec';
+    const webhookUrl = req.body.webhookUrl || process.env.APPS_SCRIPT_WEBHOOK_URL || defaultWebhook;
+    const sheetUrl = req.body.sheetUrl || '';
     let fetchedRows: any[] = [];
     let methodUsed = '';
 
@@ -222,13 +224,14 @@ app.post('/api/sync-google-sheets', async (req, res) => {
       try {
         const scriptRes = await fetch(webhookUrl, { redirect: 'follow' });
         if (scriptRes.ok) {
-          const contentType = scriptRes.headers.get('content-type') || '';
-          if (contentType.includes('application/json')) {
+          try {
             const data = await scriptRes.json();
             if (data && Array.isArray(data.submissions) && data.submissions.length > 0) {
               fetchedRows = data.submissions;
               methodUsed = 'Google Apps Script Webhook';
             }
+          } catch (jsonErr) {
+            console.warn('Lỗi parse JSON từ Google Apps Script:', jsonErr);
           }
         }
       } catch (errHook) {

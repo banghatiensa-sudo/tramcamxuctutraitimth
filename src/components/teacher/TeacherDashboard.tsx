@@ -44,7 +44,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     return localStorage.getItem('tram_cam_xuc_admin_pass') || 'tramcamxuc2026';
   });
 
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  // Mặc định đăng nhập trực tiếp vào trang quản trị Admin theo yêu cầu
+  const [isAuthenticated, setIsAuthenticated] = useState(true);
   const [usernameInput, setUsernameInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [authError, setAuthError] = useState(false);
@@ -132,13 +133,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     }
   };
 
-  // Tự động đồng bộ ngay khi Thầy Cô đăng nhập và định kỳ mỗi 30 giây
+  // Tự động đồng bộ ngay khi vào Admin và định kỳ mỗi 15 giây
   useEffect(() => {
     if (isAuthenticated) {
       handleQuickSync(false);
       const interval = setInterval(() => {
         handleQuickSync(false);
-      }, 30000);
+      }, 15000);
       return () => clearInterval(interval);
     }
   }, [isAuthenticated]);
@@ -407,25 +408,15 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
         {/* Nút hành động */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* Nút Lấy dữ liệu thực tế từ Google Sheet */}
+          {/* Nút Lấy dữ liệu thực tế về Admin */}
           <button
             onClick={() => handleQuickSync(true)}
             disabled={isSyncingSheets}
             className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs shadow-sm flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
-            title="Lấy ngay toàn bộ bài chia sẻ thực tế từ Google Sheet"
+            title="Lấy ngay toàn bộ bài chia sẻ thực tế từ Google Sheet / Apps Script Webhook"
           >
             <RefreshCw size={14} className={isSyncingSheets ? 'animate-spin' : ''} />
-            <span>{isSyncingSheets ? 'Đang lấy dữ liệu...' : 'Đồng Bộ Google Sheet'}</span>
-          </button>
-
-          {/* Nút Cài Đặt Sheet & Drive */}
-          <button
-            onClick={() => setIsGoogleSheetModalOpen(true)}
-            className="px-3 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-extrabold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
-            title="Cài đặt link Google Sheet, Webhook và lấy mã nguồn Apps Script (doPost & doGet)"
-          >
-            <Sheet size={14} className="text-emerald-700" />
-            <span>Cài Đặt Sheet & Drive</span>
+            <span>{isSyncingSheets ? 'Đang lấy dữ liệu...' : 'Lấy Dữ Liệu Về Admin (Tự động 15s)'}</span>
           </button>
 
           <button
@@ -453,25 +444,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         <div className="flex items-center gap-2">
           <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
           <span>
-            Hệ thống Admin đang tự động đồng bộ tất cả dữ liệu thực từ Google Sheet / Drive: <strong className="text-emerald-950 font-extrabold">{lastSyncText}</strong>
+            Hệ thống Admin đang tự động đồng bộ mỗi 15s tất cả dữ liệu thực từ Google Sheet / Drive: <strong className="text-emerald-950 font-extrabold">{lastSyncText}</strong>
           </span>
         </div>
         <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={() => handleQuickSync(true)}
-            className="text-[11px] text-emerald-700 hover:text-emerald-900 underline font-bold cursor-pointer"
+            disabled={isSyncingSheets}
+            className="text-[11px] text-emerald-700 hover:text-emerald-900 underline font-bold cursor-pointer disabled:opacity-50"
           >
-            Nhấn để làm mới ngay
-          </button>
-          <span className="text-emerald-300">|</span>
-          <button
-            type="button"
-            onClick={() => setIsGoogleSheetModalOpen(true)}
-            className="text-[11px] text-emerald-800 hover:text-emerald-950 font-bold underline cursor-pointer flex items-center gap-1"
-          >
-            <Sheet size={12} />
-            <span>Cài Đặt Sheet & Lấy Code.gs</span>
+            {isSyncingSheets ? 'Đang cập nhật...' : 'Nhấn để làm mới ngay'}
           </button>
         </div>
       </div>
