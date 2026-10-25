@@ -418,6 +418,15 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             <span>{isSyncingSheets ? 'Đang lấy dữ liệu...' : 'Đồng Bộ Google Sheet'}</span>
           </button>
 
+          {/* Nút Cài Đặt Sheet & Drive */}
+          <button
+            onClick={() => setIsGoogleSheetModalOpen(true)}
+            className="px-3 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-extrabold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+            title="Cài đặt link Google Sheet, Webhook và lấy mã nguồn Apps Script (doPost & doGet)"
+          >
+            <Sheet size={14} className="text-emerald-700" />
+            <span>Cài Đặt Sheet & Drive</span>
+          </button>
 
           <button
             onClick={() => exportSubmissionsToCsv(submissions)}
@@ -447,13 +456,24 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             Hệ thống Admin đang tự động đồng bộ tất cả dữ liệu thực từ Google Sheet / Drive: <strong className="text-emerald-950 font-extrabold">{lastSyncText}</strong>
           </span>
         </div>
-        <button
-          type="button"
-          onClick={() => handleQuickSync(true)}
-          className="text-[11px] text-emerald-700 hover:text-emerald-900 underline font-bold cursor-pointer"
-        >
-          Nhấn để làm mới ngay
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => handleQuickSync(true)}
+            className="text-[11px] text-emerald-700 hover:text-emerald-900 underline font-bold cursor-pointer"
+          >
+            Nhấn để làm mới ngay
+          </button>
+          <span className="text-emerald-300">|</span>
+          <button
+            type="button"
+            onClick={() => setIsGoogleSheetModalOpen(true)}
+            className="text-[11px] text-emerald-800 hover:text-emerald-950 font-bold underline cursor-pointer flex items-center gap-1"
+          >
+            <Sheet size={12} />
+            <span>Cài Đặt Sheet & Lấy Code.gs</span>
+          </button>
+        </div>
       </div>
 
       {syncFeedback && (

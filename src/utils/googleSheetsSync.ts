@@ -17,9 +17,23 @@ export function getSavedWebhookUrl(): string {
 
 export function getSavedSheetUrl(): string {
   try {
-    return localStorage.getItem(STORAGE_SHEET_KEY) || '';
+    const envUrl = (
+      (import.meta as any).env?.VITE_GOOGLE_SHEET_URL ||
+      (import.meta as any).env?.VITE_GOOGLE_SHEET_ID ||
+      ''
+    ).trim();
+    const stored = localStorage.getItem(STORAGE_SHEET_KEY) || '';
+    return stored || envUrl || '';
   } catch {
     return '';
+  }
+}
+
+export function saveSheetUrl(url: string): void {
+  try {
+    localStorage.setItem(STORAGE_SHEET_KEY, url.trim());
+  } catch (e) {
+    console.warn('Lỗi lưu Google Sheet URL:', e);
   }
 }
 
@@ -77,95 +91,161 @@ export function normalizeStatus(raw?: string): ProcessingStatus {
 }
 
 /**
+ * Phân tích đối tượng bảng Google Visualization table (dùng chung cho cả GViz JSON và GViz JSONP)
+ */
+export function parseGvizTableObject(data: any): StudentSubmission[] {
+  if (!data || !data.table) return [];
+  const cols = data.table.cols || [];
+  const rows = data.table.rows || [];
+
+  const colMap: Record<string, number> = {};
+  cols.forEach((col: any, idx: number) => {
+    const label = (col.label || '').toLowerCase().trim();
+    if (label.includes('stt')) colMap['stt'] = idx;
+    else if (label.includes('mã')) colMap['code'] = idx;
+    else if (label.includes('tên')) colMap['name'] = idx;
+    else if (label.includes('lớp')) colMap['class'] = idx;
+    else if (label.includes('cảm xúc')) colMap['emotion'] = idx;
+    else if (label.includes('thể loại')) colMap['category'] = idx;
+    else if (label.includes('tiêu đề')) colMap['title'] = idx;
+    else if (label.includes('nội dung')) colMap['content'] = idx;
+    else if (label.includes('ghi âm')) colMap['audio'] = idx;
+    else if (label.includes('hình ảnh') || label.includes('video') || label.includes('ảnh')) colMap['media'] = idx;
+    else if (label.includes('ưu tiên') || label.includes('mức độ') || label.includes('sos')) colMap['priority'] = idx;
+    else if (label.includes('trạng thái')) colMap['status'] = idx;
+    else if (label.includes('ghi chú')) colMap['note'] = idx;
+    else if (label.includes('thời gian') || label.includes('ngày')) colMap['time'] = idx;
+  });
+
+  const submissions: StudentSubmission[] = [];
+
+  rows.forEach((r: any, rIdx: number) => {
+    const c = r.c || [];
+    const getVal = (colIndex: number | undefined, defaultIdx: number): string => {
+      const idx = colIndex !== undefined ? colIndex : defaultIdx;
+      const cell = c[idx];
+      if (!cell) return '';
+      return (cell.f !== undefined && cell.f !== null ? cell.f : cell.v !== undefined && cell.v !== null ? cell.v : '').toString().trim();
+    };
+
+    const secretCode = getVal(colMap['code'], 1) || (getVal(colMap['name'], 2) ? `TCX-${1000 + rIdx}` : '');
+    if (!secretCode) return; // Bỏ qua dòng trống
+
+    const studentName = getVal(colMap['name'], 2) || 'Ẩn danh';
+    const studentClass = getVal(colMap['class'], 3);
+    const emotionText = getVal(colMap['emotion'], 4);
+    const category = normalizeCategory(getVal(colMap['category'], 5));
+    const title = getVal(colMap['title'], 6) || 'Tâm sự của học sinh';
+    const content = getVal(colMap['content'], 7);
+    const audioUrl = getVal(colMap['audio'], 8);
+    const mediaUrl = getVal(colMap['media'], 9);
+    const priorityText = getVal(colMap['priority'], 10);
+    const statusText = getVal(colMap['status'], 11);
+    const note = getVal(colMap['note'], 12);
+    const time = getVal(colMap['time'], 13) || new Date().toISOString().slice(0, 16).replace('T', ' ');
+
+    const isUrgent = priorityText.toUpperCase().includes('SOS') || priorityText.toUpperCase().includes('KHẨN CẤP');
+
+    let imageUrl: string | undefined = undefined;
+    let videoUrl: string | undefined = undefined;
+    if (mediaUrl) {
+      const mLow = mediaUrl.toLowerCase();
+      if (mLow.includes('video') || mLow.includes('.mp4') || mLow.includes('.webm')) {
+        videoUrl = mediaUrl;
+      } else {
+        imageUrl = mediaUrl;
+      }
+    }
+
+    submissions.push({
+      id: `gviz-${rIdx}-${secretCode}`,
+      secretCode,
+      studentName,
+      studentClass,
+      emotion: normalizeEmotion(emotionText),
+      category,
+      title,
+      content: content || 'Học sinh gửi tâm sự qua hệ thống.',
+      audioUrl: audioUrl || undefined,
+      imageUrl,
+      videoUrl,
+      isUrgent,
+      status: normalizeStatus(statusText),
+      teacherNote: note || undefined,
+      timestamp: time,
+      feedbacks: [],
+    });
+  });
+
+  return submissions;
+}
+
+/**
+ * Tải trực tiếp Google Sheet qua JSONP (Bỏ qua hoàn toàn CORS trên Vercel và mọi thiết bị di động/máy tính)
+ */
+export function fetchGvizViaJsonp(sheetId: string): Promise<StudentSubmission[]> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return resolve([]);
+    }
+
+    const callbackName = `__gviz_cb_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+    const script = document.createElement('script');
+    let isFinished = false;
+
+    const timer = setTimeout(() => {
+      if (!isFinished) {
+        isFinished = true;
+        cleanup();
+        resolve([]);
+      }
+    }, 9000);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      try {
+        delete (window as any)[callbackName];
+      } catch {}
+      if (script.parentNode) {
+        script.parentNode.removeChild(script);
+      }
+    };
+
+    (window as any)[callbackName] = (data: any) => {
+      if (isFinished) return;
+      isFinished = true;
+      try {
+        const subs = parseGvizTableObject(data);
+        cleanup();
+        resolve(subs);
+      } catch (err) {
+        console.warn('Lỗi phân tích JSONP data:', err);
+        cleanup();
+        resolve([]);
+      }
+    };
+
+    script.onerror = () => {
+      if (!isFinished) {
+        isFinished = true;
+        cleanup();
+        resolve([]);
+      }
+    };
+
+    script.src = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=responseHandler:${callbackName}`;
+    document.head.appendChild(script);
+  });
+}
+
+/**
  * Phân tích dữ liệu bảng Google Sheets GViz JSON
  */
 export function parseGvizData(gvizText: string): StudentSubmission[] {
   try {
     const jsonStr = gvizText.replace(/^[^{]*/, '').replace(/[^}]*$/, '');
     const data = JSON.parse(jsonStr);
-    const cols = data.table?.cols || [];
-    const rows = data.table?.rows || [];
-
-    const colMap: Record<string, number> = {};
-    cols.forEach((col: any, idx: number) => {
-      const label = (col.label || '').toLowerCase().trim();
-      if (label.includes('stt')) colMap['stt'] = idx;
-      else if (label.includes('mã')) colMap['code'] = idx;
-      else if (label.includes('tên')) colMap['name'] = idx;
-      else if (label.includes('lớp')) colMap['class'] = idx;
-      else if (label.includes('cảm xúc')) colMap['emotion'] = idx;
-      else if (label.includes('thể loại')) colMap['category'] = idx;
-      else if (label.includes('tiêu đề')) colMap['title'] = idx;
-      else if (label.includes('nội dung')) colMap['content'] = idx;
-      else if (label.includes('ghi âm')) colMap['audio'] = idx;
-      else if (label.includes('hình ảnh') || label.includes('video') || label.includes('ảnh')) colMap['media'] = idx;
-      else if (label.includes('ưu tiên') || label.includes('mức độ')) colMap['priority'] = idx;
-      else if (label.includes('trạng thái')) colMap['status'] = idx;
-      else if (label.includes('ghi chú')) colMap['note'] = idx;
-      else if (label.includes('thời gian') || label.includes('ngày')) colMap['time'] = idx;
-    });
-
-    const submissions: StudentSubmission[] = [];
-
-    rows.forEach((r: any, rIdx: number) => {
-      const c = r.c || [];
-      const getVal = (colIndex: number | undefined, defaultIdx: number) => {
-        const idx = colIndex !== undefined ? colIndex : defaultIdx;
-        const cell = c[idx];
-        if (!cell) return '';
-        return (cell.v !== undefined && cell.v !== null ? cell.v : cell.f || '').toString().trim();
-      };
-
-      const secretCode = getVal(colMap['code'], 1);
-      if (!secretCode) return; // Bỏ qua dòng trống
-
-      const studentName = getVal(colMap['name'], 2) || 'Ẩn danh';
-      const studentClass = getVal(colMap['class'], 3);
-      const emotionText = getVal(colMap['emotion'], 4);
-      const category = normalizeCategory(getVal(colMap['category'], 5));
-      const title = getVal(colMap['title'], 6) || 'Tâm sự của học sinh';
-      const content = getVal(colMap['content'], 7);
-      const audioUrl = getVal(colMap['audio'], 8);
-      const mediaUrl = getVal(colMap['media'], 9);
-      const priorityText = getVal(colMap['priority'], 10);
-      const statusText = getVal(colMap['status'], 11);
-      const note = getVal(colMap['note'], 12);
-      const time = getVal(colMap['time'], 13) || new Date().toISOString().slice(0, 16).replace('T', ' ');
-
-      const isUrgent = priorityText.toUpperCase().includes('SOS') || priorityText.toUpperCase().includes('KHẨN CẤP');
-
-      let imageUrl: string | undefined = undefined;
-      let videoUrl: string | undefined = undefined;
-      if (mediaUrl) {
-        const mLow = mediaUrl.toLowerCase();
-        if (mLow.includes('video') || mLow.includes('.mp4') || mLow.includes('.webm')) {
-          videoUrl = mediaUrl;
-        } else {
-          imageUrl = mediaUrl;
-        }
-      }
-
-      submissions.push({
-        id: `gviz-${rIdx}-${secretCode}`,
-        secretCode,
-        studentName,
-        studentClass,
-        emotion: normalizeEmotion(emotionText),
-        category,
-        title,
-        content: content || 'Học sinh gửi tâm sự qua hệ thống.',
-        audioUrl: audioUrl || undefined,
-        imageUrl,
-        videoUrl,
-        isUrgent,
-        status: normalizeStatus(statusText),
-        teacherNote: note || undefined,
-        timestamp: time,
-        feedbacks: [],
-      });
-    });
-
-    return submissions;
+    return parseGvizTableObject(data);
   } catch (err) {
     console.warn('Lỗi phân tích GViz JSON:', err);
     return [];
@@ -301,7 +381,63 @@ export async function fetchSubmissionsFromGoogleSheet(options?: {
   const webhookUrl = (options?.webhookUrl || getSavedWebhookUrl()).trim();
   const sheetUrl = (options?.sheetUrl || getSavedSheetUrl()).trim();
 
-  // 1. Thử gọi qua Backend API server nếu đang chạy
+  // 1. Nếu có URL Google Sheet (hoặc ID), ưu tiên kết nối trực tiếp (100% hoạt động trên Vercel không cần server)
+  const sheetId = extractSpreadsheetId(sheetUrl);
+  if (sheetId) {
+    // 1.1 Thử qua JSONP (Bỏ qua hoàn toàn CORS trên mọi trình duyệt/Vercel)
+    try {
+      const jsonpData = await fetchGvizViaJsonp(sheetId);
+      if (jsonpData && jsonpData.length > 0) {
+        return {
+          success: true,
+          submissions: jsonpData,
+          message: `🎉 Đã kết nối và lấy thành công ${jsonpData.length} bài chia sẻ thực tế từ Google Sheet!`,
+        };
+      }
+    } catch (e) {
+      console.warn('Lỗi fetch GViz JSONP:', e);
+    }
+
+    // 1.2 Thử qua GViz JSON fetch
+    try {
+      const gvizUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json`;
+      const res = await fetch(gvizUrl);
+      if (res.ok) {
+        const text = await res.text();
+        const parsed = parseGvizData(text);
+        if (parsed.length > 0) {
+          return {
+            success: true,
+            submissions: parsed,
+            message: `🎉 Đã kết nối trực tiếp bảng tính Google Sheet và lấy thành công ${parsed.length} bài chia sẻ thực tế!`,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('Lỗi fetch GViz trực tiếp:', e);
+    }
+
+    // 1.3 Thử qua CSV Export
+    try {
+      const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
+      const res = await fetch(csvUrl);
+      if (res.ok) {
+        const text = await res.text();
+        const parsed = parseCsvData(text);
+        if (parsed.length > 0) {
+          return {
+            success: true,
+            submissions: parsed,
+            message: `🎉 Đã xuất và nạp thành công ${parsed.length} bài chia sẻ từ Google Sheet!`,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('Lỗi fetch CSV trực tiếp:', e);
+    }
+  }
+
+  // 2. Thử gọi qua Backend API server nếu có chạy proxy
   try {
     const apiRes = await fetch('/api/sync-google-sheets', {
       method: 'POST',
@@ -320,49 +456,7 @@ export async function fetchSubmissionsFromGoogleSheet(options?: {
       }
     }
   } catch {
-    // Backend API không phản hồi hoặc đang chạy client-only, chuyển sang phương án Client Fetch trực tiếp
-  }
-
-  // 2. Thử tải trực tiếp từ Google Sheet nếu có URL Google Sheet
-  const sheetId = extractSpreadsheetId(sheetUrl);
-  if (sheetId) {
-    // 2.1 Thử qua GViz JSON
-    try {
-      const gvizUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json`;
-      const res = await fetch(gvizUrl);
-      if (res.ok) {
-        const text = await res.text();
-        const parsed = parseGvizData(text);
-        if (parsed.length > 0) {
-          return {
-            success: true,
-            submissions: parsed,
-            message: `Đã kết nối trực tiếp bảng tính Google Sheet và lấy thành công ${parsed.length} bài chia sẻ thực tế!`,
-          };
-        }
-      }
-    } catch (e) {
-      console.warn('Lỗi fetch GViz trực tiếp:', e);
-    }
-
-    // 2.2 Thử qua CSV Export
-    try {
-      const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
-      const res = await fetch(csvUrl);
-      if (res.ok) {
-        const text = await res.text();
-        const parsed = parseCsvData(text);
-        if (parsed.length > 0) {
-          return {
-            success: true,
-            submissions: parsed,
-            message: `Đã xuất và nạp thành công ${parsed.length} bài chia sẻ từ Google Sheet!`,
-          };
-        }
-      }
-    } catch (e) {
-      console.warn('Lỗi fetch CSV trực tiếp:', e);
-    }
+    // Backend API không phản hồi hoặc đang chạy client-only (Vercel)
   }
 
   // 3. Thử tải qua Google Apps Script Webhook nếu có doGet
@@ -375,7 +469,7 @@ export async function fetchSubmissionsFromGoogleSheet(options?: {
       const res = await fetch(fetchUrl);
       if (res.ok) {
         const data = await res.json();
-        if (data && data.submissions && Array.isArray(data.submissions)) {
+        if (data && data.submissions && Array.isArray(data.submissions) && data.submissions.length > 0) {
           return {
             success: true,
             submissions: data.submissions,
@@ -388,10 +482,18 @@ export async function fetchSubmissionsFromGoogleSheet(options?: {
     }
   }
 
+  if (!sheetUrl) {
+    return {
+      success: false,
+      submissions: [],
+      message: 'Chưa có đường link Google Sheet. Thầy Cô vui lòng dán đường link Google Sheet của trường để Admin tự động tải tất cả dữ liệu thực tế về nhé!',
+    };
+  }
+
   return {
     success: false,
     submissions: [],
-    message: 'Chưa thể kết nối tới Google Sheet. Thầy Cô vui lòng kiểm tra lại đường link Google Sheet hoặc Webhook URL nhé!',
+    message: 'Chưa tìm thấy bài mới trên Google Sheet. Thầy Cô hãy đảm bảo Google Sheet đã được bật chia sẻ quyền "Bất kỳ ai có đường liên kết đều có thể xem" nhé!',
   };
 }
 
