@@ -78,6 +78,59 @@ function parseCsvRows(csvText: string): string[][] {
   });
 }
 
+// Phân tích phản hồi từ teacherNote trên server
+function parseServerFeedbacks(note?: string, defaultStudentName?: string): any[] {
+  if (!note || !note.trim()) return [];
+  const parts = note.split(/\s*\|\s*/).map((p) => p.trim()).filter(Boolean);
+  const feedbacks: any[] = [];
+
+  parts.forEach((part, idx) => {
+    if (part.startsWith('[Bé nhắn lại]:') || part.startsWith('[Học sinh nhắn lại]:') || part.startsWith('[Bé:')) {
+      const text = part.replace(/^\[(Bé nhắn lại|Học sinh nhắn lại|Bé)\]:\s*/, '').trim();
+      feedbacks.push({
+        id: `fb-note-student-${idx}-${text.slice(0, 10)}`,
+        senderRole: 'student',
+        senderName: defaultStudentName || 'Học sinh',
+        teacherName: defaultStudentName || 'Học sinh',
+        comment: text,
+        timestamp: 'Trước đó',
+      });
+    } else if (part.startsWith('[Bé gửi ghi âm') || part.startsWith('[Học sinh gửi ghi âm')) {
+      feedbacks.push({
+        id: `fb-note-student-audio-${idx}`,
+        senderRole: 'student',
+        senderName: defaultStudentName || 'Học sinh',
+        teacherName: defaultStudentName || 'Học sinh',
+        comment: 'Đã gửi một đoạn ghi âm giọng nói tâm sự với Thầy Cô.',
+        timestamp: 'Trước đó',
+      });
+    } else if (part.startsWith('[Cô ') || part.startsWith('[Thầy ') || part.startsWith('[Thầy Cô') || part.startsWith('[Admin')) {
+      const match = part.match(/^\[([^\]]+)\]:\s*(.*)$/);
+      const teacher = match ? match[1] : 'Thầy Cô Tư Vấn';
+      const text = match ? match[2] : part;
+      feedbacks.push({
+        id: `fb-note-teacher-${idx}-${text.slice(0, 10)}`,
+        senderRole: 'teacher',
+        senderName: teacher,
+        teacherName: teacher,
+        comment: text,
+        timestamp: 'Trước đó',
+      });
+    } else if (part.length > 0) {
+      feedbacks.push({
+        id: `fb-note-gen-${idx}-${part.slice(0, 10)}`,
+        senderRole: 'teacher',
+        senderName: 'Thầy Cô Tư Vấn',
+        teacherName: 'Thầy Cô Tư Vấn',
+        comment: part,
+        timestamp: 'Trước đó',
+      });
+    }
+  });
+
+  return feedbacks;
+}
+
 // API: Lấy toàn bộ bài chia sẻ trên máy chủ
 app.get('/api/submissions', (req, res) => {
   const subs = readSubmissions();
@@ -125,16 +178,50 @@ app.put('/api/submissions/:id', (req, res) => {
   try {
     const { id } = req.params;
     const updatedData = req.body;
-    const subs = readSubmissions();
-    const index = subs.findIndex((s: any) => s.id === id || s.secretCode === id);
-
-    if (index !== -1) {
-      subs[index] = { ...subs[index], ...updatedData };
-      writeSubmissions(subs);
-      return res.json({ success: true, submission: subs[index] });
+    if (!updatedData) {
+      return res.status(400).json({ success: false, message: 'Dữ liệu không hợp lệ' });
     }
 
-    return res.status(404).json({ success: false, message: 'Không tìm thấy bài chia sẻ' });
+    const subs = readSubmissions();
+    const query = decodeURIComponent(id || '').trim().toUpperCase();
+    const targetCode = (updatedData.secretCode || '').trim().toUpperCase();
+
+    const index = subs.findIndex((s: any) => {
+      const sId = (s.id || '').toString().trim().toUpperCase();
+      const sCode = (s.secretCode || '').toString().trim().toUpperCase();
+      return sId === query || sCode === query || (targetCode && sCode === targetCode);
+    });
+
+    let savedItem: any;
+    if (index !== -1) {
+      subs[index] = { ...subs[index], ...updatedData };
+      savedItem = subs[index];
+    } else {
+      subs.unshift(updatedData);
+      savedItem = updatedData;
+    }
+
+    writeSubmissions(subs);
+
+    // Forward ngầm sang Apps Script Webhook
+    const webhookUrl =
+      process.env.APPS_SCRIPT_WEBHOOK_URL ||
+      'https://script.google.com/macros/s/AKfycbzuEvZHEoLqKjI15d9XbR0GvHMGFXo_cZRO9YYF_Zz3B9un-bbudJJAxTZIxdDzqbc/exec';
+
+    if (webhookUrl) {
+      fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          source: 'Tram Cam Xuc Tu Trai Tim',
+          syncTime: new Date().toISOString(),
+          ...savedItem,
+          submissions: [savedItem],
+        }),
+      }).catch((e) => console.warn('Lỗi forward webhook ngầm PUT:', e));
+    }
+
+    return res.json({ success: true, submission: savedItem });
   } catch (err: any) {
     return res.status(500).json({ success: false, message: err.message });
   }
@@ -250,10 +337,32 @@ app.post('/api/sync-google-sheets', async (req, res) => {
       if (!newS.secretCode) return;
       const key = newS.secretCode.trim().toUpperCase();
       const existing = map.get(key);
+      const existingNote = (existing?.teacherNote || '').trim();
+      const incomingNote = (newS?.teacherNote || '').trim();
+      const bestNote = existingNote.length >= incomingNote.length ? existingNote : incomingNote;
+
       if (existing) {
-        map.set(key, { ...existing, ...newS, feedbacks: existing.feedbacks || [] });
+        const mergedFbMap = new Map();
+        (existing.feedbacks || []).forEach((f: any) => mergedFbMap.set(f.id, f));
+        (newS.feedbacks || []).forEach((f: any) => {
+          if (!mergedFbMap.has(f.id)) mergedFbMap.set(f.id, f);
+        });
+        let finalFbs = Array.from(mergedFbMap.values());
+        if (finalFbs.length === 0 && bestNote) {
+          finalFbs = parseServerFeedbacks(bestNote, newS.studentName || existing.studentName);
+        }
+
+        map.set(key, {
+          ...existing,
+          ...newS,
+          teacherNote: bestNote,
+          feedbacks: finalFbs,
+        });
       } else {
-        map.set(key, newS);
+        const fbs = (!newS.feedbacks || newS.feedbacks.length === 0) && bestNote
+          ? parseServerFeedbacks(bestNote, newS.studentName)
+          : (newS.feedbacks || []);
+        map.set(key, { ...newS, teacherNote: bestNote, feedbacks: fbs });
       }
     });
 

@@ -6,11 +6,13 @@ export type ProcessingStatus = 'moi_tiep_nhan' | 'dang_xem_xet' | 'can_trao_doi'
 
 export interface EmotionFeedback {
   id: string;
-  teacherName: string;
+  senderRole?: 'teacher' | 'student'; // 'teacher' (Thầy Cô / Admin) hoặc 'student' (Học sinh nhắn lại)
+  senderName?: string; // Tên người gửi: ví dụ "Cô Thu Hà" hoặc "Em Tuyết Sa"
+  teacherName: string; // Tên Thầy Cô (giữ tương thích)
   comment: string;
   sticker?: string;
   timestamp: string;
-  audioUrl?: string; // Đoạn ghi âm giọng nói ấm áp của thầy cô cho học sinh lớp 1, 2 nghe
+  audioUrl?: string; // Đoạn ghi âm giọng nói ấm áp của thầy cô hoặc học sinh
   audioDuration?: number; // Giây
 }
 

@@ -4,7 +4,7 @@ import {
   Video, HelpCircle, ShieldAlert, ChevronRight, User, Settings, 
   Lock, ArrowRight, Smile, Sun, Camera, Feather, X, Menu
 } from 'lucide-react';
-import { EmotionType, StudentSubmission } from './types/emotion';
+import { EmotionType, StudentSubmission, EmotionFeedback } from './types/emotion';
 import { INITIAL_SUBMISSIONS } from './data/initialData';
 import { playSoftPop, playChimeSound } from './utils/soundEffects';
 import { syncSubmissionToAppsScript, APPS_SCRIPT_WEBHOOK_URL } from './utils/syncGoogleAppsScript';
@@ -256,10 +256,17 @@ export default function App() {
   };
 
   const handleUpdateSubmission = (updated: StudentSubmission) => {
-    setSubmissions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+    setSubmissions((prev) =>
+      prev.map((s) => (s.id === updated.id || s.secretCode === updated.secretCode ? updated : s))
+    );
+    // Lưu ngay lập tức vào IndexedDB và LocalStorage để không bị mất dữ liệu khi tải lại trang
+    saveSubmissionsToIndexedDB([updated]);
+    safeSaveToLocalStorage([updated]);
+
     // Đồng bộ lại khi thầy cô cập nhật trạng thái/phản hồi
     syncSubmissionToAppsScript(updated).catch(() => {});
-    fetch(`/api/submissions/${updated.id}`, {
+    const targetId = updated.id || updated.secretCode;
+    fetch(`/api/submissions/${encodeURIComponent(targetId)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updated),
@@ -272,14 +279,32 @@ export default function App() {
     replyAudioUrl?: string,
     replyAudioDuration?: number
   ) => {
+    const nowTime = new Date().toISOString().slice(0, 16).replace('T', ' ');
+
     setSubmissions((prev) =>
       prev.map((s) => {
-        if (s.id === subId) {
-          const noteAddition = replyText
-            ? `[Bé nhắn lại]: ${replyText}`
+        if (s.id === subId || s.secretCode === subId) {
+          const studentMsg: EmotionFeedback = {
+            id: 'student-fb-' + Date.now(),
+            senderRole: 'student',
+            senderName: s.studentName || 'Học sinh',
+            teacherName: s.studentName || 'Học sinh',
+            comment:
+              replyText.trim() ||
+              (replyAudioUrl
+                ? 'Em đã gửi một đoạn ghi âm giọng nói tâm sự với Thầy Cô.'
+                : 'Em cảm ơn Thầy Cô ạ! ❤️'),
+            timestamp: nowTime,
+            audioUrl: replyAudioUrl,
+            audioDuration: replyAudioDuration,
+          };
+
+          const noteAddition = replyText.trim()
+            ? `[Bé nhắn lại]: ${replyText.trim()}`
             : replyAudioUrl
             ? `[Bé gửi ghi âm giọng nói (${replyAudioDuration || 0}s)]`
             : '';
+
           const updatedSub: StudentSubmission = {
             ...s,
             teacherNote: s.teacherNote
@@ -287,13 +312,22 @@ export default function App() {
               : noteAddition,
             studentReplyAudioUrl: replyAudioUrl || s.studentReplyAudioUrl,
             studentReplyDuration: replyAudioDuration || s.studentReplyDuration,
+            feedbacks: [studentMsg, ...(s.feedbacks || [])],
           };
+
+          // Lưu ngay lập tức vào IndexedDB và LocalStorage
+          saveSubmissionsToIndexedDB([updatedSub]);
+          safeSaveToLocalStorage([updatedSub]);
+
+          // Đồng bộ ngầm lên Google Apps Script & Server
           syncSubmissionToAppsScript(updatedSub).catch(() => {});
-          fetch(`/api/submissions/${updatedSub.id}`, {
+          const targetId = updatedSub.id || updatedSub.secretCode;
+          fetch(`/api/submissions/${encodeURIComponent(targetId)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(updatedSub),
           }).catch(() => {});
+
           return updatedSub;
         }
         return s;

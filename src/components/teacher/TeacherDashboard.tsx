@@ -64,10 +64,23 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>('all');
   const [onlyUrgent, setOnlyUrgent] = useState(false);
 
-  // Detail & Action Modals
   const [selectedSubmission, setSelectedSubmission] = useState<StudentSubmission | null>(null);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   const [activeVideoModal, setActiveVideoModal] = useState<string | null>(null);
+
+  // Tự động cập nhật bài đang xem khi có tin nhắn mới hoặc đồng bộ ngầm
+  useEffect(() => {
+    if (selectedSubmission) {
+      const fresh = submissions.find(
+        (s) =>
+          s.secretCode.trim().toUpperCase() === selectedSubmission.secretCode.trim().toUpperCase() ||
+          s.id === selectedSubmission.id
+      );
+      if (fresh && JSON.stringify(fresh) !== JSON.stringify(selectedSubmission)) {
+        setSelectedSubmission(fresh);
+      }
+    }
+  }, [submissions]);
 
   // Audio Playback
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
@@ -260,23 +273,36 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     const hasAudio = !!(teacherRecorder.base64Audio || teacherRecorder.audioUrl);
     if (!selectedSubmission || (!hasText && !hasAudio)) return;
 
+    const teacherDisplayName = teacherName.trim() || 'Cô Thu Hà (Tư vấn học đường)';
+    const nowTime = new Date().toISOString().slice(0, 16).replace('T', ' ');
+
     const newFeedback: EmotionFeedback = {
       id: 'fb-' + Date.now(),
-      teacherName: teacherName.trim() || 'Thầy Cô Tư Vấn',
+      senderRole: 'teacher',
+      senderName: teacherDisplayName,
+      teacherName: teacherDisplayName,
       comment:
         teacherReplyText.trim() ||
         'Thầy Cô gửi lời nhắn nhủ, yêu thương bằng giọng nói cho con ở trên nhé! ❤️',
       sticker: selectedSticker,
-      timestamp: new Date().toISOString().slice(0, 16).replace('T', ' '),
+      timestamp: nowTime,
       audioUrl: teacherRecorder.base64Audio || teacherRecorder.audioUrl || undefined,
       audioDuration: teacherRecorder.audioDuration || teacherRecorder.recordingTime,
     };
 
+    const teacherNoteAddition = `[${teacherDisplayName}]: ${newFeedback.comment}${selectedSticker ? ` (${selectedSticker})` : ''}${newFeedback.audioUrl ? ' [Kèm giọng nói]' : ''}`;
+    let mergedNote = selectedSubmission.teacherNote
+      ? `${selectedSubmission.teacherNote} | ${teacherNoteAddition}`
+      : teacherNoteAddition;
+    if (teacherPrivateNote.trim()) {
+      mergedNote += ` [Ghi chú nội bộ: ${teacherPrivateNote.trim()}]`;
+    }
+
     const updated: StudentSubmission = {
       ...selectedSubmission,
       status: selectedSubmission.status === 'moi_tiep_nhan' ? 'dang_xem_xet' : selectedSubmission.status,
-      teacherNote: teacherPrivateNote.trim() || selectedSubmission.teacherNote,
-      feedbacks: [newFeedback, ...selectedSubmission.feedbacks],
+      teacherNote: mergedNote,
+      feedbacks: [newFeedback, ...(selectedSubmission.feedbacks || [])],
     };
 
     onUpdateSubmission(updated);
@@ -1244,38 +1270,90 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               </div>
             </form>
 
-            {/* Lịch sử phản hồi đã gửi */}
-            {selectedSubmission.feedbacks.length > 0 && (
-              <div className="mt-6 pt-4 border-t border-slate-200 space-y-2">
-                <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                  Lịch sử các phản hồi đã gửi:
-                </div>
-                {selectedSubmission.feedbacks.map((fb) => (
-                  <div key={fb.id} className="p-3 bg-amber-50/60 rounded-xl border border-amber-200 text-xs">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="font-extrabold text-amber-900">{fb.teacherName}</span>
-                      <span className="text-[10px] text-slate-400">{fb.timestamp}</span>
-                    </div>
-                    <p className="text-slate-700">{fb.comment}</p>
-                    {fb.audioUrl && (
-                      <div className="mt-2 flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleAudio('fb-' + fb.id, fb.audioUrl!)}
-                          className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold text-[11px] flex items-center gap-1 cursor-pointer"
-                        >
-                          {playingAudioId === 'fb-' + fb.id ? <Pause size={12} /> : <Play size={12} />}
-                          <span>{playingAudioId === 'fb-' + fb.id ? 'Tạm dừng' : `Nghe lời dặn dò (${fb.audioDuration || 0}s)`}</span>
-                        </button>
-                      </div>
-                    )}
-                    {fb.sticker && (
-                      <span className="inline-block mt-1 text-[11px] font-bold text-amber-700 bg-white px-2 py-0.5 rounded-md border border-amber-200">
-                        {fb.sticker}
-                      </span>
-                    )}
+            {/* Lịch sử phản hồi và trao đổi qua lại 2 chiều */}
+            {selectedSubmission.feedbacks && selectedSubmission.feedbacks.length > 0 && (
+              <div className="mt-6 pt-4 border-t border-slate-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-extrabold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                    <MessageSquare size={14} className="text-amber-600" />
+                    <span>Hộp thư trao đổi 2 chiều ({selectedSubmission.feedbacks.length} tin nhắn):</span>
                   </div>
-                ))}
+                  <span className="text-[10px] bg-emerald-50 text-emerald-800 font-bold px-2 py-0.5 rounded-full border border-emerald-200">
+                    Phản hồi qua lại trực tiếp
+                  </span>
+                </div>
+
+                <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
+                  {selectedSubmission.feedbacks.map((fb) => {
+                    const isStudent = fb.senderRole === 'student';
+                    return (
+                      <div
+                        key={fb.id}
+                        className={`p-3 rounded-2xl border text-xs shadow-xs space-y-1.5 ${
+                          isStudent
+                            ? 'bg-sky-50/90 border-sky-300 text-sky-950 ml-3'
+                            : 'bg-amber-50/90 border-amber-300 text-amber-950 mr-3'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`w-6 h-6 rounded-full flex items-center justify-center font-black text-[10px] text-white shadow-xs ${
+                                isStudent ? 'bg-sky-500' : 'bg-gradient-to-r from-amber-500 to-orange-500'
+                              }`}
+                            >
+                              {isStudent ? '🎒' : '👩‍🏫'}
+                            </span>
+                            <span className="font-extrabold text-xs">
+                              {isStudent
+                                ? `Bé nhắn lại: ${fb.senderName || selectedSubmission.studentName}`
+                                : (fb.senderName || fb.teacherName || 'Cô Thu Hà')}
+                            </span>
+                            {isStudent && (
+                              <span className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 text-[10px] font-bold">
+                                Học sinh
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-slate-400 font-semibold">{fb.timestamp}</span>
+                        </div>
+
+                        <p className="text-slate-800 leading-relaxed font-medium pl-8">{fb.comment}</p>
+
+                        {fb.audioUrl && (
+                          <div className="pl-8 pt-1 flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleAudio('fb-' + fb.id, fb.audioUrl!)}
+                              className={`px-3 py-1.5 rounded-xl text-white font-bold text-[11px] flex items-center gap-1.5 cursor-pointer shadow-xs ${
+                                isStudent
+                                  ? 'bg-sky-600 hover:bg-sky-700'
+                                  : 'bg-amber-500 hover:bg-amber-600'
+                              }`}
+                            >
+                              {playingAudioId === 'fb-' + fb.id ? <Pause size={13} /> : <Play size={13} />}
+                              <span>
+                                {playingAudioId === 'fb-' + fb.id
+                                  ? 'Tạm dừng'
+                                  : isStudent
+                                  ? `Nghe giọng bé nhắn (${fb.audioDuration || 0}s)`
+                                  : `Nghe lời dặn dò (${fb.audioDuration || 0}s)`}
+                              </span>
+                            </button>
+                          </div>
+                        )}
+
+                        {fb.sticker && (
+                          <div className="pl-8 pt-0.5">
+                            <span className="inline-block text-[11px] font-bold text-amber-800 bg-white px-2 py-0.5 rounded-md border border-amber-200 shadow-xs">
+                              {fb.sticker}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>

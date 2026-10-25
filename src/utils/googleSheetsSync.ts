@@ -1,4 +1,59 @@
-import { StudentSubmission, EmotionType, ProcessingStatus, SubmissionCategory } from '../types/emotion';
+import { StudentSubmission, EmotionType, ProcessingStatus, SubmissionCategory, EmotionFeedback } from '../types/emotion';
+
+/**
+ * Phân tích và tạo mảng EmotionFeedback từ chuỗi ghi chú / phản hồi lưu trong Google Sheet
+ */
+export function parseFeedbacksFromNote(note?: string, defaultStudentName?: string): EmotionFeedback[] {
+  if (!note || !note.trim()) return [];
+  const parts = note.split(/\s*\|\s*/).map((p) => p.trim()).filter(Boolean);
+  const feedbacks: EmotionFeedback[] = [];
+
+  parts.forEach((part, idx) => {
+    if (part.startsWith('[Bé nhắn lại]:') || part.startsWith('[Học sinh nhắn lại]:') || part.startsWith('[Bé:')) {
+      const text = part.replace(/^\[(Bé nhắn lại|Học sinh nhắn lại|Bé)\]:\s*/, '').trim();
+      feedbacks.push({
+        id: `fb-note-student-${idx}-${text.slice(0, 10)}`,
+        senderRole: 'student',
+        senderName: defaultStudentName || 'Học sinh',
+        teacherName: defaultStudentName || 'Học sinh',
+        comment: text,
+        timestamp: 'Trước đó',
+      });
+    } else if (part.startsWith('[Bé gửi ghi âm') || part.startsWith('[Học sinh gửi ghi âm')) {
+      feedbacks.push({
+        id: `fb-note-student-audio-${idx}`,
+        senderRole: 'student',
+        senderName: defaultStudentName || 'Học sinh',
+        teacherName: defaultStudentName || 'Học sinh',
+        comment: 'Đã gửi một đoạn ghi âm giọng nói tâm sự với Thầy Cô.',
+        timestamp: 'Trước đó',
+      });
+    } else if (part.startsWith('[Cô ') || part.startsWith('[Thầy ') || part.startsWith('[Thầy Cô') || part.startsWith('[Admin')) {
+      const match = part.match(/^\[([^\]]+)\]:\s*(.*)$/);
+      const teacher = match ? match[1] : 'Thầy Cô Tư Vấn';
+      const text = match ? match[2] : part;
+      feedbacks.push({
+        id: `fb-note-teacher-${idx}-${text.slice(0, 10)}`,
+        senderRole: 'teacher',
+        senderName: teacher,
+        teacherName: teacher,
+        comment: text,
+        timestamp: 'Trước đó',
+      });
+    } else if (part.length > 0) {
+      feedbacks.push({
+        id: `fb-note-gen-${idx}-${part.slice(0, 10)}`,
+        senderRole: 'teacher',
+        senderName: 'Thầy Cô Tư Vấn',
+        teacherName: 'Thầy Cô Tư Vấn',
+        comment: part,
+        timestamp: 'Trước đó',
+      });
+    }
+  });
+
+  return feedbacks;
+}
 
 export const DEFAULT_WEBHOOK_URL =
   'https://script.google.com/macros/s/AKfycbzuEvZHEoLqKjI15d9XbR0GvHMGFXo_cZRO9YYF_Zz3B9un-bbudJJAxTZIxdDzqbc/exec';
@@ -179,7 +234,7 @@ export function parseGvizTableObject(data: any): StudentSubmission[] {
       status: normalizeStatus(statusText),
       teacherNote: note || undefined,
       timestamp: time,
-      feedbacks: [],
+      feedbacks: parseFeedbacksFromNote(note, studentName),
     });
   });
 
@@ -342,7 +397,7 @@ export function parseCsvData(csvText: string): StudentSubmission[] {
         status,
         teacherNote: note || undefined,
         timestamp: time,
-        feedbacks: [],
+        feedbacks: parseFeedbacksFromNote(note, studentName),
       });
     }
 
@@ -476,11 +531,18 @@ export async function fetchSubmissionsFromGoogleSheet(options?: {
       if (res.ok) {
         const data = await res.json();
         if (data && data.submissions && Array.isArray(data.submissions)) {
-          if (data.submissions.length > 0) {
+          const processedList = data.submissions.map((s: any) => ({
+            ...s,
+            feedbacks:
+              s.feedbacks && s.feedbacks.length > 0
+                ? s.feedbacks
+                : parseFeedbacksFromNote(s.teacherNote, s.studentName),
+          }));
+          if (processedList.length > 0) {
             return {
               success: true,
-              submissions: data.submissions,
-              message: `Đã kết nối và lấy thành công ${data.submissions.length} bài thực tế từ Google Apps Script!`,
+              submissions: processedList,
+              message: `Đã kết nối và lấy thành công ${processedList.length} bài thực tế từ Google Apps Script!`,
             };
           } else {
             return {
@@ -533,17 +595,41 @@ export function mergeSubmissions(
     const key = newSub.secretCode.trim().toUpperCase();
     const existing = map.get(key);
 
+    const existingNote = (existing?.teacherNote || '').trim();
+    const incomingNote = (newSub?.teacherNote || '').trim();
+    const bestNote = existingNote.length >= incomingNote.length ? existingNote : incomingNote;
+
     if (existing) {
-      // Giữ lại audio/video dạng Base64 nội bộ nếu có chất lượng cao hơn
+      // Kết hợp mảng feedbacks không bị mất tin nhắn của thầy cô hoặc học sinh
+      const mergedFbMap = new Map<string, EmotionFeedback>();
+      (existing.feedbacks || []).forEach((f) => mergedFbMap.set(f.id, f));
+      (newSub.feedbacks || []).forEach((f) => {
+        if (!mergedFbMap.has(f.id)) mergedFbMap.set(f.id, f);
+      });
+
+      let finalFeedbacks = Array.from(mergedFbMap.values());
+      if (finalFeedbacks.length === 0 && bestNote) {
+        finalFeedbacks = parseFeedbacksFromNote(
+          bestNote,
+          newSub.studentName || existing.studentName
+        );
+      }
+
       map.set(key, {
         ...newSub,
         audioUrl: existing.audioUrl?.startsWith('data:') ? existing.audioUrl : newSub.audioUrl || existing.audioUrl,
         videoUrl: existing.videoUrl?.startsWith('data:') ? existing.videoUrl : newSub.videoUrl || existing.videoUrl,
         imageUrl: existing.imageUrl?.startsWith('data:') ? existing.imageUrl : newSub.imageUrl || existing.imageUrl,
-        feedbacks: existing.feedbacks && existing.feedbacks.length > 0 ? existing.feedbacks : newSub.feedbacks,
+        studentReplyAudioUrl: existing.studentReplyAudioUrl || newSub.studentReplyAudioUrl,
+        studentReplyDuration: existing.studentReplyDuration || newSub.studentReplyDuration,
+        teacherNote: bestNote,
+        feedbacks: finalFeedbacks,
       });
     } else {
-      map.set(key, newSub);
+      const fbs = (!newSub.feedbacks || newSub.feedbacks.length === 0) && bestNote
+        ? parseFeedbacksFromNote(bestNote, newSub.studentName)
+        : (newSub.feedbacks || []);
+      map.set(key, { ...newSub, teacherNote: bestNote, feedbacks: fbs });
     }
   });
 

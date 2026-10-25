@@ -173,6 +173,18 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
     }
   }, [isOpen, initialCode, initialName, submissions]);
 
+  // Tự động cập nhật bài đang mở khi Thầy Cô gửi phản hồi mới hoặc đồng bộ ngầm
+  useEffect(() => {
+    if (foundSubmission) {
+      const match = submissions.find(
+        (s) => s.secretCode.trim().toUpperCase() === foundSubmission.secretCode.trim().toUpperCase()
+      );
+      if (match && JSON.stringify(match) !== JSON.stringify(foundSubmission)) {
+        setFoundSubmission(match);
+      }
+    }
+  }, [submissions]);
+
   // Lắng nghe phím Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -315,11 +327,36 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
 
     if ((!hasText && !hasAudio) || !foundSubmission || !onSendStudentReply) return;
 
+    const studentAudio = studentRecorder.base64Audio || studentRecorder.audioUrl;
+    const studentDuration = studentRecorder.audioDuration || studentRecorder.recordingTime;
+    const text = replyInput.trim();
+
     onSendStudentReply(
       foundSubmission.id,
-      replyInput.trim(),
-      studentRecorder.base64Audio || studentRecorder.audioUrl || undefined,
-      studentRecorder.audioDuration || studentRecorder.recordingTime
+      text,
+      studentAudio || undefined,
+      studentDuration
+    );
+
+    // Thêm ngay lập tức tin nhắn của em vào danh sách hiển thị
+    const newStudentFb = {
+      id: 'student-fb-' + Date.now(),
+      senderRole: 'student' as const,
+      senderName: foundSubmission.studentName || 'Em (Học sinh)',
+      teacherName: foundSubmission.studentName || 'Em (Học sinh)',
+      comment: text || (studentAudio ? 'Em đã gửi một đoạn ghi âm giọng nói tâm sự với Thầy Cô.' : 'Em cảm ơn Thầy Cô ạ! ❤️'),
+      timestamp: 'Vừa xong',
+      audioUrl: studentAudio || undefined,
+      audioDuration: studentDuration,
+    };
+
+    setFoundSubmission((prev) =>
+      prev
+        ? {
+            ...prev,
+            feedbacks: [newStudentFb, ...(prev.feedbacks || [])],
+          }
+        : null
     );
 
     // Phát âm thanh chuông ngân báo hiệu gửi phản hồi thành công
@@ -597,12 +634,17 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
               </div>
             </div>
 
-            {/* DANH SÁCH PHẢN HỒI & ĐỘNG VIÊN TỪ THẦY CÔ */}
+            {/* DANH SÁCH TRAO ĐỔI & PHẢN HỒI QUA LẠI GIỮA THẦY CÔ VÀ EM */}
             <div className="space-y-3 pt-1">
-              <h5 className="font-extrabold text-sm text-slate-800 flex items-center gap-2">
-                <Heart className="w-4 h-4 text-rose-500 fill-rose-500" />
-                <span>Thư phản hồi & lời dặn dò từ Thầy Cô:</span>
-              </h5>
+              <div className="flex items-center justify-between">
+                <h5 className="font-extrabold text-sm text-slate-800 flex items-center gap-2">
+                  <Heart className="w-4 h-4 text-rose-500 fill-rose-500" />
+                  <span>Trao đổi qua lại giữa Thầy Cô & Em ({foundSubmission.feedbacks.length} tin nhắn):</span>
+                </h5>
+                <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                  Tin nhắn 2 chiều trực tiếp
+                </span>
+              </div>
 
               {foundSubmission.feedbacks.length === 0 ? (
                 <div className="p-6 rounded-2xl bg-amber-50/70 border-2 border-dashed border-amber-300 text-center space-y-2">
@@ -613,77 +655,118 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
                     Thầy cô đã nhận được tâm sự của em!
                   </p>
                   <p className="text-xs text-amber-700 max-w-md mx-auto leading-relaxed">
-                    Thầy cô đang đọc thư và chuẩn bị những lời chia sẻ ấm áp nhất. Hệ thống vẫn đang duy
-                    trì tài khoản của em, em hãy quay lại sau ít phút để nghe lời nhắn nhé!
+                    Thầy cô đang đọc thư và chuẩn bị những lời chia sẻ ấm áp nhất. Em cũng có thể bấm Micro hoặc gõ tin nhắn ở bên dưới để nhắn thêm cho Thầy Cô ngay bây giờ nhé!
                   </p>
                 </div>
               ) : (
-                foundSubmission.feedbacks.map((fb) => (
-                  <div
-                    key={fb.id}
-                    className="p-4.5 rounded-2xl bg-white border-2 border-amber-200 shadow-md relative overflow-hidden space-y-2.5"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-amber-400 to-orange-400 text-white flex items-center justify-center font-black text-xs shadow-xs">
-                          GV
-                        </div>
-                        <div>
-                          <div className="font-extrabold text-xs text-amber-950">
-                            {fb.teacherName}
-                          </div>
-                          <div className="text-[10px] text-slate-400 font-medium">
-                            {fb.timestamp}
-                          </div>
-                        </div>
-                      </div>
-
-                      {fb.sticker && (
-                        <div className="px-3 py-1 rounded-full bg-gradient-to-r from-amber-400 to-orange-400 text-white font-black text-xs shadow-xs flex items-center gap-1.5">
-                          <Award size={13} />
-                          <span>{fb.sticker}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* LỜI NHẮN BẰNG GIỌNG NÓI CỦA THẦY CÔ (Dành cho bé lớp 1, 2) */}
-                    {fb.audioUrl && (
-                      <div className="p-3 rounded-xl bg-gradient-to-r from-orange-50 to-amber-50 border-2 border-amber-300 flex items-center justify-between gap-3 shadow-xs">
-                        <div className="flex items-center gap-2">
-                          <div className="w-8 h-8 rounded-full bg-amber-500 text-white flex items-center justify-center shadow-xs">
-                            <Volume2 size={16} />
-                          </div>
-                          <div>
-                            <div className="text-xs font-black text-amber-950">
-                              Giọng nói của Cô/Thầy dặn dò con:
+                <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+                  {foundSubmission.feedbacks.map((fb) => {
+                    const isStudent = fb.senderRole === 'student';
+                    return (
+                      <div
+                        key={fb.id}
+                        className={`p-4 rounded-2xl border-2 shadow-xs relative overflow-hidden space-y-2.5 ${
+                          isStudent
+                            ? 'bg-sky-50/90 border-sky-300 ml-4'
+                            : 'bg-white border-amber-300 mr-4'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <div
+                              className={`w-9 h-9 rounded-full text-white flex items-center justify-center font-black text-xs shadow-xs ${
+                                isStudent
+                                  ? 'bg-sky-500'
+                                  : 'bg-gradient-to-tr from-amber-400 to-orange-400'
+                              }`}
+                            >
+                              {isStudent ? '🎒' : 'GV'}
                             </div>
-                            <div className="text-[10px] text-amber-700 font-semibold">
-                              (Dành cho bé lớp 1, 2 nghe cô đọc thư)
+                            <div>
+                              <div className="font-extrabold text-xs text-slate-900 flex items-center gap-1.5">
+                                <span>
+                                  {isStudent
+                                    ? `Em nhắn lại (${fb.senderName || foundSubmission.studentName})`
+                                    : (fb.senderName || fb.teacherName || 'Cô Thu Hà')}
+                                </span>
+                                {isStudent && (
+                                  <span className="text-[10px] px-1.5 py-0.2 bg-sky-200 text-sky-800 font-bold rounded">
+                                    Học sinh
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-slate-400 font-medium">
+                                {fb.timestamp}
+                              </div>
                             </div>
                           </div>
+
+                          {fb.sticker && (
+                            <div className="px-3 py-1 rounded-full bg-gradient-to-r from-amber-400 to-orange-400 text-white font-black text-xs shadow-xs flex items-center gap-1.5">
+                              <Award size={13} />
+                              <span>{fb.sticker}</span>
+                            </div>
+                          )}
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => handleTogglePlayTeacherAudio(fb.id, fb.audioUrl!)}
-                          className={`px-3.5 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs ${
-                            activeAudioPlaying === fb.id
-                              ? 'bg-rose-500 text-white animate-pulse'
-                              : 'bg-amber-500 hover:bg-amber-600 text-white'
-                          }`}
-                        >
-                          {activeAudioPlaying === fb.id ? <Pause size={14} /> : <Play size={14} />}
-                          <span>{activeAudioPlaying === fb.id ? 'Tạm dừng' : 'Bấm nghe giọng cô'}</span>
-                        </button>
-                      </div>
-                    )}
+                        {/* Đoạn ghi âm giọng nói */}
+                        {fb.audioUrl && (
+                          <div
+                            className={`p-3 rounded-xl border flex items-center justify-between gap-3 shadow-xs ${
+                              isStudent
+                                ? 'bg-sky-100/70 border-sky-300'
+                                : 'bg-gradient-to-r from-orange-50 to-amber-50 border-amber-300'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <div
+                                className={`w-8 h-8 rounded-full text-white flex items-center justify-center shadow-xs ${
+                                  isStudent ? 'bg-sky-500' : 'bg-amber-500'
+                                }`}
+                              >
+                                <Volume2 size={16} />
+                              </div>
+                              <div>
+                                <div className="text-xs font-black text-slate-900">
+                                  {isStudent ? 'Giọng nói em đã nhắn:' : 'Giọng nói của Cô/Thầy dặn dò con:'}
+                                </div>
+                                <div className="text-[10px] text-slate-500 font-semibold">
+                                  {isStudent ? `(Đoạn thu âm ${fb.audioDuration || 0}s)` : '(Dành cho bé lớp 1, 2 nghe cô đọc thư)'}
+                                </div>
+                              </div>
+                            </div>
 
-                    {/* Nội dung phản hồi dạng chữ */}
-                    <p className="text-sm text-slate-700 font-medium leading-relaxed pl-2 sm:pl-11">
-                      {fb.comment}
-                    </p>
-                  </div>
-                ))
+                            <button
+                              type="button"
+                              onClick={() => handleTogglePlayTeacherAudio(fb.id, fb.audioUrl!)}
+                              className={`px-3.5 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs ${
+                                activeAudioPlaying === fb.id
+                                  ? 'bg-rose-500 text-white animate-pulse'
+                                  : isStudent
+                                  ? 'bg-sky-600 hover:bg-sky-700 text-white'
+                                  : 'bg-amber-500 hover:bg-amber-600 text-white'
+                              }`}
+                            >
+                              {activeAudioPlaying === fb.id ? <Pause size={14} /> : <Play size={14} />}
+                              <span>
+                                {activeAudioPlaying === fb.id
+                                  ? 'Tạm dừng'
+                                  : isStudent
+                                  ? 'Nghe lại giọng em'
+                                  : 'Bấm nghe giọng cô'}
+                              </span>
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Nội dung phản hồi dạng chữ */}
+                        <p className="text-sm text-slate-700 font-medium leading-relaxed pl-2 sm:pl-11">
+                          {fb.comment}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
 
