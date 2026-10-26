@@ -20,7 +20,8 @@ import {
   isGoogleDriveUrl, 
   getDriveThumbnailUrl, 
   getDriveDirectStreamUrl, 
-  getDrivePreviewUrl 
+  getDrivePreviewUrl,
+  getPlayableAudioUrl 
 } from '../../utils/googleDriveHelpers';
 import { convertBlobToDataUrl } from '../../utils/syncGoogleAppsScript';
 
@@ -217,27 +218,23 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
   const handleToggleAudio = (id: string, url: string) => {
     if (playingAudioId === id) {
-      audioElement?.pause();
+      if (audioElement) {
+        audioElement.pause();
+      }
       setPlayingAudioId(null);
     } else {
       if (audioElement) {
         audioElement.pause();
       }
-      const streamUrl = isGoogleDriveUrl(url) ? getDriveDirectStreamUrl(url) : url;
+      const streamUrl = getPlayableAudioUrl(url);
       const audio = new Audio(streamUrl);
+      audio.preload = 'auto';
       audio.onended = () => setPlayingAudioId(null);
-      audio.onerror = () => {
-        // If Google Drive link fails in direct audio stream, open in new tab
-        if (isGoogleDriveUrl(url)) {
-          window.open(getDrivePreviewUrl(url), '_blank');
-        }
-        setPlayingAudioId(null);
+      audio.onerror = (e) => {
+        console.warn('Lỗi stream audio:', e);
       };
-      audio.play().catch(() => {
-        if (isGoogleDriveUrl(url)) {
-          window.open(getDrivePreviewUrl(url), '_blank');
-        }
-        setPlayingAudioId(null);
+      audio.play().catch((err) => {
+        console.warn('Audio play error, showing inline player:', err);
       });
       setAudioElement(audio);
       setPlayingAudioId(id);
@@ -1016,6 +1013,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       </a>
                     )}
                   </div>
+                  {playingAudioId === selectedSubmission.id && (
+                    <div className="w-full mt-2 pt-2 border-t border-sky-100 animate-in fade-in">
+                      <audio
+                        src={getPlayableAudioUrl(selectedSubmission.audioUrl!)}
+                        controls
+                        autoPlay
+                        playsInline
+                        className="w-full h-8 rounded-lg"
+                      />
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1057,6 +1065,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         </a>
                       )}
                     </div>
+                    {playingAudioId === 'reply-' + selectedSubmission.id && (
+                      <div className="w-full mt-2 pt-2 border-t border-pink-200 animate-in fade-in">
+                        <audio
+                          src={getPlayableAudioUrl(replyAudio)}
+                          controls
+                          autoPlay
+                          playsInline
+                          className="w-full h-8 rounded-lg"
+                        />
+                      </div>
+                    )}
                   </div>
                 );
               })()}
@@ -1370,6 +1389,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                 <ExternalLink size={12} />
                                 <span>Drive</span>
                               </a>
+                            )}
+                            {playingAudioId === 'fb-' + fb.id && (
+                              <div className="w-full pt-1 animate-in fade-in">
+                                <audio
+                                  src={getPlayableAudioUrl(fb.audioUrl)}
+                                  controls
+                                  autoPlay
+                                  playsInline
+                                  className="w-full h-8 rounded-lg max-w-sm"
+                                />
+                              </div>
                             )}
                           </div>
                         )}

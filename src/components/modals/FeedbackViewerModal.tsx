@@ -30,7 +30,8 @@ import { playReplySuccessSound } from '../../utils/soundEffects';
 import { 
   isGoogleDriveUrl, 
   getDriveDirectStreamUrl, 
-  getDrivePreviewUrl 
+  getDrivePreviewUrl,
+  getPlayableAudioUrl 
 } from '../../utils/googleDriveHelpers';
 import { convertBlobToDataUrl } from '../../utils/syncGoogleAppsScript';
 
@@ -246,25 +247,22 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
   // Học sinh nghe lại đoạn ghi âm trong bài chia sẻ của chính mình
   const handleTogglePlayStudentSubmissionAudio = (url: string) => {
     if (playingStudentSubmissionAudio) {
-      studentSubAudioRef.current?.pause();
+      if (studentSubAudioRef.current) {
+        studentSubAudioRef.current.pause();
+      }
       setPlayingStudentSubmissionAudio(false);
     } else {
       stopAllAudio();
-      const streamUrl = isGoogleDriveUrl(url) ? getDriveDirectStreamUrl(url) : url;
+      const streamUrl = getPlayableAudioUrl(url);
       const audio = new Audio(streamUrl);
+      audio.preload = 'auto';
       studentSubAudioRef.current = audio;
       audio.onended = () => setPlayingStudentSubmissionAudio(false);
-      audio.onerror = () => {
-        if (isGoogleDriveUrl(url)) {
-          window.open(getDrivePreviewUrl(url), '_blank');
-        }
-        setPlayingStudentSubmissionAudio(false);
+      audio.onerror = (e) => {
+        console.warn('Lỗi audio học sinh:', e);
       };
-      audio.play().catch(() => {
-        if (isGoogleDriveUrl(url)) {
-          window.open(getDrivePreviewUrl(url), '_blank');
-        }
-        setPlayingStudentSubmissionAudio(false);
+      audio.play().catch((err) => {
+        console.warn('Play audio catch:', err);
       });
       setPlayingStudentSubmissionAudio(true);
     }
@@ -273,26 +271,23 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
   // Phát âm thanh trao đổi (thư dặn dò của Thầy Cô hoặc giọng nói của chính bé nhắn lại)
   const handleTogglePlayTeacherAudio = (id: string, url: string) => {
     if (activeAudioPlaying === id) {
-      activeAudioRef.current?.pause();
+      if (activeAudioRef.current) {
+        activeAudioRef.current.pause();
+      }
       setActiveAudioPlaying(null);
     } else {
       stopAllAudio();
-      const streamUrl = isGoogleDriveUrl(url) ? getDriveDirectStreamUrl(url) : url;
+      const streamUrl = getPlayableAudioUrl(url);
       const audio = new Audio(streamUrl);
-      audio.onended = () => setActiveAudioPlaying(null);
-      audio.onerror = () => {
-        if (isGoogleDriveUrl(url)) {
-          window.open(getDrivePreviewUrl(url), '_blank');
-        }
-        setActiveAudioPlaying(null);
-      };
-      audio.play().catch(() => {
-        if (isGoogleDriveUrl(url)) {
-          window.open(getDrivePreviewUrl(url), '_blank');
-        }
-        setActiveAudioPlaying(null);
-      });
+      audio.preload = 'auto';
       activeAudioRef.current = audio;
+      audio.onended = () => setActiveAudioPlaying(null);
+      audio.onerror = (e) => {
+        console.warn('Lỗi audio trao đổi:', e);
+      };
+      audio.play().catch((err) => {
+        console.warn('Play audio trao đổi catch:', err);
+      });
       setActiveAudioPlaying(id);
     }
   };
@@ -676,6 +671,17 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
                         </a>
                       )}
                     </div>
+                    {playingStudentSubmissionAudio && (
+                      <div className="w-full mt-2 pt-2 border-t border-sky-200 animate-in fade-in">
+                        <audio
+                          src={getPlayableAudioUrl(foundSubmission.audioUrl!)}
+                          controls
+                          autoPlay
+                          playsInline
+                          className="w-full h-8 rounded-lg"
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -852,6 +858,17 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
                                 </a>
                               )}
                             </div>
+                            {activeAudioPlaying === fb.id && (
+                              <div className="w-full pt-2 border-t border-amber-200/60 animate-in fade-in">
+                                <audio
+                                  src={getPlayableAudioUrl(fb.audioUrl)}
+                                  controls
+                                  autoPlay
+                                  playsInline
+                                  className="w-full h-8 rounded-lg max-w-sm"
+                                />
+                              </div>
+                            )}
                           </div>
                         )}
 

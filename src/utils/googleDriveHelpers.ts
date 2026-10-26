@@ -36,7 +36,21 @@ export function getDriveDirectStreamUrl(url?: string): string {
   if (!url) return '';
   const fileId = extractDriveFileId(url);
   if (fileId) {
-    return `https://drive.google.com/uc?export=download&id=${fileId}`;
+    return `/api/audio-proxy?id=${fileId}`;
+  }
+  return url;
+}
+
+export function getPlayableAudioUrl(url?: string): string {
+  if (!url) return '';
+  if (url.startsWith('data:audio/') || url.startsWith('blob:')) {
+    return url;
+  }
+  if (isGoogleDriveUrl(url)) {
+    const fileId = extractDriveFileId(url);
+    if (fileId) {
+      return `/api/audio-proxy?id=${fileId}`;
+    }
   }
   return url;
 }

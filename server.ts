@@ -284,6 +284,92 @@ app.put('/api/submissions/:id', (req, res) => {
   }
 });
 
+// Cache âm thanh trong bộ nhớ RAM để phát lại tức thì 0ms không tốn băng thông
+const audioProxyCache = new Map<string, { buffer: Buffer; contentType: string }>();
+
+// API: Proxy phát âm thanh Google Drive trực tiếp cho trình duyệt, bỏ qua 100% rào cản CORS & Cookies
+app.get('/api/audio-proxy', async (req, res) => {
+  try {
+    const rawUrl = (req.query.url as string) || '';
+    let fileId = (req.query.id as string) || '';
+
+    if (!fileId && rawUrl) {
+      const matchFileD = rawUrl.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+      if (matchFileD && matchFileD[1]) fileId = matchFileD[1];
+      const matchIdParam = rawUrl.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+      if (!fileId && matchIdParam && matchIdParam[1]) fileId = matchIdParam[1];
+    }
+
+    if (!fileId) {
+      return res.status(400).send('Thiếu mã file Google Drive');
+    }
+
+    // 1. Nếu đã có trong cache bộ nhớ: Trả về tức thì 0ms
+    if (audioProxyCache.has(fileId)) {
+      const cached = audioProxyCache.get(fileId)!;
+      res.setHeader('Content-Type', cached.contentType || 'audio/webm');
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Length', cached.buffer.length);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      return res.send(cached.buffer);
+    }
+
+    // 2. Tải binary stream trực tiếp từ máy chủ Google Drive
+    const candidateUrls = [
+      `https://drive.usercontent.google.com/download?id=${fileId}&export=download&authuser=0`,
+      `https://drive.google.com/uc?export=download&id=${fileId}`,
+      `https://docs.google.com/uc?export=download&id=${fileId}`,
+    ];
+
+    let audioBuffer: Buffer | null = null;
+    let finalContentType = 'audio/webm';
+
+    for (const testUrl of candidateUrls) {
+      try {
+        const driveRes = await fetch(testUrl, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            Accept: '*/*',
+          },
+          redirect: 'follow',
+        });
+
+        if (driveRes.ok) {
+          const cType = driveRes.headers.get('content-type') || '';
+          if (!cType.includes('text/html')) {
+            const buf = await driveRes.arrayBuffer();
+            if (buf.byteLength > 100) {
+              audioBuffer = Buffer.from(buf);
+              finalContentType = cType.startsWith('audio/') ? cType : 'audio/webm';
+              break;
+            }
+          }
+        }
+      } catch (err) {
+        // Thử đường dẫn tiếp theo
+      }
+    }
+
+    if (audioBuffer) {
+      audioProxyCache.set(fileId, { buffer: audioBuffer, contentType: finalContentType });
+      res.setHeader('Content-Type', finalContentType);
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Length', audioBuffer.length);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      return res.send(audioBuffer);
+    }
+
+    // Fallback: Chuyển hướng sang Google Drive Preview
+    return res.redirect(`https://drive.google.com/uc?export=download&id=${fileId}`);
+  } catch (err: any) {
+    console.error('Lỗi stream audio-proxy:', err);
+    return res.status(500).send('Lỗi khi tải luồng âm thanh');
+  }
+});
+
 // API: Tự động kết nối và lấy dữ liệu trực tiếp từ Google Sheets / Google Apps Script
 app.post('/api/sync-google-sheets', async (req, res) => {
   try {
