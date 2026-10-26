@@ -39,7 +39,19 @@ export async function syncSubmissionToAppsScript(submission: StudentSubmission):
     const audioBase64 = await convertBlobToDataUrl(submission.audioUrl);
     const photoBase64 = await convertBlobToDataUrl(submission.imageUrl);
     const videoBase64 = await convertBlobToDataUrl(submission.videoUrl);
-    const replyAudioBase64 = await convertBlobToDataUrl(submission.studentReplyAudioUrl);
+
+    // Trích xuất đoạn ghi âm của học sinh phản hồi lại
+    const studentFbWithAudio = submission.feedbacks?.find(
+      (f) => f.senderRole === 'student' && f.audioUrl
+    );
+    const resolvedReplyAudio = submission.studentReplyAudioUrl || studentFbWithAudio?.audioUrl;
+    const replyAudioBase64 = await convertBlobToDataUrl(resolvedReplyAudio);
+
+    // Trích xuất đoạn ghi âm của thầy cô giáo phản hồi dặn dò
+    const teacherFbWithAudio = submission.feedbacks?.find(
+      (f) => f.senderRole === 'teacher' && f.audioUrl
+    );
+    const teacherAudioBase64 = await convertBlobToDataUrl(teacherFbWithAudio?.audioUrl);
 
     const submissionData = {
       id: submission.id,
@@ -54,11 +66,13 @@ export async function syncSubmissionToAppsScript(submission: StudentSubmission):
       photoBase64: photoBase64 || '',
       videoBase64: videoBase64 || '',
       replyAudioBase64: replyAudioBase64 || '',
+      teacherAudioBase64: teacherAudioBase64 || '',
       isUrgent: submission.isUrgent,
       sosIssue: submission.sosIssue || '',
       status: submission.status || 'moi_tiep_nhan',
       teacherNote: submission.teacherNote || '',
       timestamp: submission.timestamp,
+      feedbacks: submission.feedbacks || [],
     };
 
     // Gửi cả cấu trúc đơn (root) và mảng (submissions) để tương thích mọi phiên bản Code.gs

@@ -225,7 +225,33 @@ app.put('/api/submissions/:id', (req, res) => {
 
     let savedItem: any;
     if (index !== -1) {
-      subs[index] = { ...subs[index], ...updatedData };
+      const existing = subs[index];
+      let mergedFeedbacks = updatedData.feedbacks;
+      if (Array.isArray(updatedData.feedbacks) && Array.isArray(existing.feedbacks)) {
+        mergedFeedbacks = updatedData.feedbacks.map((f: any) => {
+          if (f.audioUrl) return f;
+          const exF = existing.feedbacks.find(
+            (ef: any) => ef.id === f.id || (ef.senderRole === f.senderRole && ef.comment === f.comment)
+          );
+          return exF?.audioUrl
+            ? { ...f, audioUrl: exF.audioUrl, audioDuration: exF.audioDuration || f.audioDuration }
+            : f;
+        });
+        existing.feedbacks.forEach((ef: any) => {
+          if (!mergedFeedbacks.some((mf: any) => mf.id === ef.id)) {
+            mergedFeedbacks.push(ef);
+          }
+        });
+      }
+      subs[index] = {
+        ...existing,
+        ...updatedData,
+        audioUrl: updatedData.audioUrl || existing.audioUrl,
+        videoUrl: updatedData.videoUrl || existing.videoUrl,
+        imageUrl: updatedData.imageUrl || existing.imageUrl,
+        studentReplyAudioUrl: updatedData.studentReplyAudioUrl || existing.studentReplyAudioUrl,
+        feedbacks: mergedFeedbacks || updatedData.feedbacks || existing.feedbacks || [],
+      };
       savedItem = subs[index];
     } else {
       subs.unshift(updatedData);
@@ -373,19 +399,40 @@ app.post('/api/sync-google-sheets', async (req, res) => {
       const bestNote = existingNote.length >= incomingNote.length ? existingNote : incomingNote;
 
       if (existing) {
-        const mergedFbMap = new Map();
-        (existing.feedbacks || []).forEach((f: any) => mergedFbMap.set(f.id, f));
-        (newS.feedbacks || []).forEach((f: any) => {
-          if (!mergedFbMap.has(f.id)) mergedFbMap.set(f.id, f);
+        const existingFbs = existing.feedbacks || [];
+        const incomingFbs = newS.feedbacks || [];
+        const finalFbs = [...existingFbs];
+        incomingFbs.forEach((inFb: any) => {
+          const matchIdx = finalFbs.findIndex(
+            (ef: any) =>
+              ef.id === inFb.id ||
+              (ef.senderRole === inFb.senderRole && ef.comment?.trim() === inFb.comment?.trim())
+          );
+          if (matchIdx !== -1) {
+            if (!finalFbs[matchIdx].audioUrl && inFb.audioUrl) {
+              finalFbs[matchIdx].audioUrl = inFb.audioUrl;
+            }
+            if (!finalFbs[matchIdx].audioDuration && inFb.audioDuration) {
+              finalFbs[matchIdx].audioDuration = inFb.audioDuration;
+            }
+          } else {
+            finalFbs.push(inFb);
+          }
         });
-        let finalFbs = Array.from(mergedFbMap.values());
+
         if (finalFbs.length === 0 && bestNote) {
-          finalFbs = parseServerFeedbacks(bestNote, newS.studentName || existing.studentName);
+          finalFbs.push(...parseServerFeedbacks(bestNote, newS.studentName || existing.studentName));
         }
 
         map.set(key, {
           ...existing,
           ...newS,
+          audioUrl: existing.audioUrl?.startsWith('data:') ? existing.audioUrl : (newS.audioUrl || existing.audioUrl),
+          videoUrl: existing.videoUrl?.startsWith('data:') ? existing.videoUrl : (newS.videoUrl || existing.videoUrl),
+          imageUrl: existing.imageUrl?.startsWith('data:') ? existing.imageUrl : (newS.imageUrl || existing.imageUrl),
+          studentReplyAudioUrl: existing.studentReplyAudioUrl?.startsWith('data:')
+            ? existing.studentReplyAudioUrl
+            : (newS.studentReplyAudioUrl || existing.studentReplyAudioUrl),
           teacherNote: bestNote,
           feedbacks: finalFbs,
         });

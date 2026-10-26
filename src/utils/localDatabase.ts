@@ -43,26 +43,63 @@ export async function saveSubmissionsToIndexedDB(submissions: StudentSubmission[
       const getAllReq = store.getAll();
       getAllReq.onsuccess = () => {
         const oldMap = new Map<string, StudentSubmission>();
-        const oldItems = getAllReq.result as StudentSubmission[];
-        if (Array.isArray(oldItems)) {
-          oldItems.forEach((item) => {
-            if (item && item.id) {
-              oldMap.set(item.id, item);
-            }
-          });
-        }
+        const oldItems = (getAllReq.result as StudentSubmission[]) || [];
+        oldItems.forEach((item) => {
+          if (item) {
+            if (item.id) oldMap.set(item.id, item);
+            if (item.secretCode) oldMap.set(item.secretCode.trim().toUpperCase(), item);
+          }
+        });
+
+        // Nạp và gộp từng submission
+        submissions.forEach((sub) => {
+          const key = (sub.id || sub.secretCode || '').trim();
+          const codeKey = (sub.secretCode || '').trim().toUpperCase();
+          const existing = oldMap.get(key) || (codeKey ? oldMap.get(codeKey) : undefined);
+
+          // Gộp feedbacks để bảo tồn trọn vẹn audioUrl
+          let mergedFeedbacks = sub.feedbacks || [];
+          if (existing?.feedbacks && existing.feedbacks.length > 0) {
+            mergedFeedbacks = (sub.feedbacks || []).map((f) => {
+              if (f.audioUrl) return f;
+              const exF = existing.feedbacks.find(
+                (ef) => ef.id === f.id || (ef.senderRole === f.senderRole && ef.comment === f.comment)
+              );
+              return exF?.audioUrl
+                ? { ...f, audioUrl: exF.audioUrl, audioDuration: exF.audioDuration || f.audioDuration }
+                : f;
+            });
+            existing.feedbacks.forEach((ef) => {
+              if (!mergedFeedbacks.some((mf) => mf.id === ef.id)) {
+                mergedFeedbacks.push(ef);
+              }
+            });
+          }
+
+          const preserved: StudentSubmission = {
+            ...existing,
+            ...sub,
+            videoUrl: sub.videoUrl?.startsWith('data:') ? sub.videoUrl : (sub.videoUrl || existing?.videoUrl),
+            audioUrl: sub.audioUrl?.startsWith('data:') ? sub.audioUrl : (sub.audioUrl || existing?.audioUrl),
+            imageUrl: sub.imageUrl?.startsWith('data:') ? sub.imageUrl : (sub.imageUrl || existing?.imageUrl),
+            studentReplyAudioUrl: sub.studentReplyAudioUrl?.startsWith('data:')
+              ? sub.studentReplyAudioUrl
+              : (sub.studentReplyAudioUrl || existing?.studentReplyAudioUrl),
+            studentReplyDuration: sub.studentReplyDuration || existing?.studentReplyDuration,
+            feedbacks: mergedFeedbacks,
+          };
+
+          if (preserved.id) oldMap.set(preserved.id, preserved);
+          if (preserved.secretCode) oldMap.set(preserved.secretCode.trim().toUpperCase(), preserved);
+        });
 
         store.clear();
-        submissions.forEach((sub) => {
-          const existing = oldMap.get(sub.id);
-          const preserved: StudentSubmission = {
-            ...sub,
-            videoUrl: sub.videoUrl || existing?.videoUrl,
-            audioUrl: sub.audioUrl || existing?.audioUrl,
-            imageUrl: sub.imageUrl || existing?.imageUrl,
-          };
-          store.put(preserved);
+        // Lấy danh sách duy nhất theo id
+        const uniqueItems = new Map<string, StudentSubmission>();
+        Array.from(oldMap.values()).forEach((item) => {
+          if (item && item.id) uniqueItems.set(item.id, item);
         });
+        uniqueItems.forEach((item) => store.put(item));
       };
 
       getAllReq.onerror = () => {
@@ -121,8 +158,34 @@ export async function loadSubmissionsFromIndexedDB(): Promise<StudentSubmission[
  */
 export function safeSaveToLocalStorage(submissions: StudentSubmission[]) {
   try {
+    let toSave = submissions;
+    if (submissions.length === 1) {
+      try {
+        const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (raw) {
+          const oldList = JSON.parse(raw);
+          if (Array.isArray(oldList) && oldList.length > 1) {
+            const map = new Map<string, StudentSubmission>();
+            oldList.forEach((s: StudentSubmission) => {
+              if (s && s.id) map.set(s.id, s);
+              if (s && s.secretCode) map.set(s.secretCode.trim().toUpperCase(), s);
+            });
+            submissions.forEach((s) => {
+              const existing = (s.id && map.get(s.id)) || (s.secretCode && map.get(s.secretCode.trim().toUpperCase()));
+              const merged = { ...existing, ...s };
+              if (merged.id) map.set(merged.id, merged);
+            });
+            const uniqueMap = new Map<string, StudentSubmission>();
+            Array.from(map.values()).forEach((item) => {
+              if (item && item.id) uniqueMap.set(item.id, item);
+            });
+            toSave = Array.from(uniqueMap.values());
+          }
+        }
+      } catch {}
+    }
     // Thử lưu trực tiếp
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(submissions));
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(toSave));
   } catch {
     // Nếu chạm giới hạn quota LocalStorage (~5MB), lọc bớt file video/ảnh dung lượng lớn trên LocalStorage
     // Trong khi đó IndexedDB vẫn lưu trữ trọn vẹn 100% video và audio

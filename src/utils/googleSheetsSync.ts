@@ -57,6 +57,22 @@ export function parseFeedbacksFromNote(
           audioUrl: audioUrlFromPart,
           audioDuration: duration,
         });
+      } else if (
+        part.startsWith('[Thầy Cô gửi ghi âm') ||
+        part.startsWith('[Thầy Cô dặn dò') ||
+        part.startsWith('[Cô gửi ghi âm') ||
+        part.startsWith('[Thầy gửi ghi âm')
+      ) {
+        feedbacks.push({
+          id: `fb-note-teacher-audio-${idx}`,
+          senderRole: 'teacher',
+          senderName: 'Thầy Cô Tư Vấn',
+          teacherName: 'Thầy Cô Tư Vấn',
+          comment: 'Thầy Cô gửi lời nhắn nhủ, yêu thương bằng giọng nói cho con.',
+          timestamp: 'Trước đó',
+          audioUrl: audioUrlFromPart,
+          audioDuration: duration,
+        });
       } else if (part.length > 0) {
         feedbacks.push({
           id: `fb-note-gen-${idx}-${part.slice(0, 10)}`,
@@ -674,34 +690,57 @@ export function mergeSubmissions(
     const bestNote = existingNote.length >= incomingNote.length ? existingNote : incomingNote;
 
     if (existing) {
-      // Kết hợp mảng feedbacks không bị mất tin nhắn của thầy cô hoặc học sinh
-      const mergedFbMap = new Map<string, EmotionFeedback>();
-      (existing.feedbacks || []).forEach((f) => mergedFbMap.set(f.id, f));
-      (newSub.feedbacks || []).forEach((f) => {
-        if (!mergedFbMap.has(f.id)) mergedFbMap.set(f.id, f);
+      // Bảo toàn trọn vẹn danh sách phản hồi hiện có (chứa audio Base64)
+      const existingFbs = existing.feedbacks || [];
+      const incomingFbs = newSub.feedbacks || [];
+
+      // Khởi tạo từ existing để giữ nguyên ID gốc và audioUrl
+      const finalFeedbacks: EmotionFeedback[] = [...existingFbs];
+
+      incomingFbs.forEach((inFb) => {
+        const matchIdx = finalFeedbacks.findIndex(
+          (ef) =>
+            ef.id === inFb.id ||
+            (ef.senderRole === inFb.senderRole && ef.comment.trim() === inFb.comment.trim())
+        );
+
+        if (matchIdx !== -1) {
+          if (!finalFeedbacks[matchIdx].audioUrl && inFb.audioUrl) {
+            finalFeedbacks[matchIdx].audioUrl = inFb.audioUrl;
+          }
+          if (!finalFeedbacks[matchIdx].audioDuration && inFb.audioDuration) {
+            finalFeedbacks[matchIdx].audioDuration = inFb.audioDuration;
+          }
+        } else {
+          finalFeedbacks.push(inFb);
+        }
       });
 
-      let finalFeedbacks = Array.from(mergedFbMap.values());
       if (finalFeedbacks.length === 0 && bestNote) {
-        finalFeedbacks = parseFeedbacksFromNote(
-          bestNote,
-          newSub.studentName || existing.studentName
+        finalFeedbacks.push(
+          ...parseFeedbacksFromNote(
+            bestNote,
+            newSub.studentName || existing.studentName,
+            existing.studentReplyAudioUrl || newSub.studentReplyAudioUrl
+          )
         );
       }
 
       map.set(key, {
         ...newSub,
-        audioUrl: existing.audioUrl?.startsWith('data:') ? existing.audioUrl : newSub.audioUrl || existing.audioUrl,
-        videoUrl: existing.videoUrl?.startsWith('data:') ? existing.videoUrl : newSub.videoUrl || existing.videoUrl,
-        imageUrl: existing.imageUrl?.startsWith('data:') ? existing.imageUrl : newSub.imageUrl || existing.imageUrl,
-        studentReplyAudioUrl: existing.studentReplyAudioUrl || newSub.studentReplyAudioUrl,
+        audioUrl: existing.audioUrl?.startsWith('data:') ? existing.audioUrl : (newSub.audioUrl || existing.audioUrl),
+        videoUrl: existing.videoUrl?.startsWith('data:') ? existing.videoUrl : (newSub.videoUrl || existing.videoUrl),
+        imageUrl: existing.imageUrl?.startsWith('data:') ? existing.imageUrl : (newSub.imageUrl || existing.imageUrl),
+        studentReplyAudioUrl: existing.studentReplyAudioUrl?.startsWith('data:')
+          ? existing.studentReplyAudioUrl
+          : (newSub.studentReplyAudioUrl || existing.studentReplyAudioUrl),
         studentReplyDuration: existing.studentReplyDuration || newSub.studentReplyDuration,
         teacherNote: bestNote,
         feedbacks: finalFeedbacks,
       });
     } else {
       const fbs = (!newSub.feedbacks || newSub.feedbacks.length === 0) && bestNote
-        ? parseFeedbacksFromNote(bestNote, newSub.studentName)
+        ? parseFeedbacksFromNote(bestNote, newSub.studentName, newSub.studentReplyAudioUrl)
         : (newSub.feedbacks || []);
       map.set(key, { ...newSub, teacherNote: bestNote, feedbacks: fbs });
     }

@@ -277,7 +277,28 @@ function doPost(e) {
         driveReplyAudioUrl = replyAudioData;
       }
 
-      // 3. Lưu hình ảnh hoặc video vào Google Drive
+      // 3. Lưu ghi âm Thầy Cô dặn dò vào Google Drive
+      var driveTeacherAudioUrl = "";
+      var teacherAudioData = item.teacherAudioBase64;
+      if (teacherAudioData && teacherAudioData.indexOf("base64,") !== -1) {
+        try {
+          var tParts = teacherAudioData.split("base64,");
+          var tHeader = tParts[0];
+          var tMime = tHeader.indexOf(":") !== -1 ? tHeader.split(":")[1].split(";")[0] : "audio/webm";
+          var tBytes = Utilities.base64Decode(tParts[1]);
+          var tFileName = "GhiAm_ThayCo_" + secretCode + "_" + Utilities.formatDate(new Date(), "GMT+7", "yyyyMMdd_HHmmss") + ".webm";
+          var tBlob = Utilities.newBlob(tBytes, tMime, tFileName);
+          var tFile = targetFolder.createFile(tBlob);
+          tFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+          driveTeacherAudioUrl = tFile.getUrl();
+        } catch (errTAudio) {
+          driveTeacherAudioUrl = "Lỗi lưu teacher audio: " + errTAudio.toString();
+        }
+      } else if (teacherAudioData && teacherAudioData.indexOf("http") === 0) {
+        driveTeacherAudioUrl = teacherAudioData;
+      }
+
+      // 4. Lưu hình ảnh hoặc video vào Google Drive
       var driveImageUrl = "";
       var mediaData = item.photoBase64 || item.videoBase64 || item.imageUrl || item.videoUrl;
       if (mediaData && mediaData.indexOf("base64,") !== -1) {
@@ -306,8 +327,12 @@ function doPost(e) {
         var replyTag = "[Bé gửi ghi âm: " + driveReplyAudioUrl + "]";
         currentNote = currentNote ? currentNote + " | " + replyTag : replyTag;
       }
+      if (driveTeacherAudioUrl && currentNote.indexOf(driveTeacherAudioUrl) === -1) {
+        var teacherTag = "[Thầy Cô gửi ghi âm: " + driveTeacherAudioUrl + "]";
+        currentNote = currentNote ? currentNote + " | " + teacherTag : teacherTag;
+      }
 
-      // 4. Kiểm tra xem mã bí mật này đã có dòng trong bảng chưa (tránh trùng lặp khi trao đổi qua lại)
+      // 5. Kiểm tra xem mã bí mật này đã có dòng trong bảng chưa (tránh trùng lặp khi trao đổi qua lại)
       var existingRowIndex = -1;
       var curLastRow = sheet.getLastRow();
       if (curLastRow > 1) {

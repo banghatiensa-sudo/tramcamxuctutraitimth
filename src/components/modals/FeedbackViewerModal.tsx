@@ -192,6 +192,28 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
     }
   }, [submissions]);
 
+  // Danh sách phản hồi đảm bảo luôn hiển thị đầy đủ tin nhắn và đoạn ghi âm của cả 2 bên
+  const displayFeedbacks = React.useMemo(() => {
+    if (!foundSubmission) return [];
+    const list = [...(foundSubmission.feedbacks || [])];
+    if (
+      foundSubmission.studentReplyAudioUrl &&
+      !list.some((f) => f.audioUrl === foundSubmission.studentReplyAudioUrl)
+    ) {
+      list.push({
+        id: 'student-reply-audio-preserved',
+        senderRole: 'student',
+        senderName: foundSubmission.studentName || 'Em (Học sinh)',
+        teacherName: foundSubmission.studentName || 'Em (Học sinh)',
+        comment: 'Bé đã gửi một đoạn ghi âm nhắn lại Thầy Cô.',
+        timestamp: 'Trước đó',
+        audioUrl: foundSubmission.studentReplyAudioUrl,
+        audioDuration: foundSubmission.studentReplyDuration,
+      });
+    }
+    return list;
+  }, [foundSubmission]);
+
   // Lắng nghe phím Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -357,9 +379,15 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
     if ((!hasText && !hasAudio) || !foundSubmission || !onSendStudentReply) return;
 
     // Đảm bảo audio luôn là Base64 Data URL để lưu vĩnh viễn không bị mất khi đóng tab
-    let studentAudio = studentRecorder.base64Audio;
+    let studentAudio: string | undefined = undefined;
+    if (studentRecorder.getAudioBase64) {
+      studentAudio = (await studentRecorder.getAudioBase64()) || undefined;
+    }
     if (!studentAudio && studentRecorder.audioUrl) {
       studentAudio = (await convertBlobToDataUrl(studentRecorder.audioUrl)) || studentRecorder.audioUrl;
+    }
+    if (!studentAudio && studentRecorder.base64Audio) {
+      studentAudio = studentRecorder.base64Audio;
     }
 
     const studentDuration = studentRecorder.audioDuration || studentRecorder.recordingTime;
@@ -689,14 +717,14 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
               <div className="flex items-center justify-between">
                 <h5 className="font-extrabold text-sm text-slate-800 flex items-center gap-2">
                   <Heart className="w-4 h-4 text-rose-500 fill-rose-500" />
-                  <span>Trao đổi qua lại giữa Thầy Cô & Em ({foundSubmission.feedbacks.length} tin nhắn):</span>
+                  <span>Trao đổi qua lại giữa Thầy Cô & Em ({displayFeedbacks.length} tin nhắn):</span>
                 </h5>
                 <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2.5 py-0.5 rounded-full border border-emerald-200">
                   Tin nhắn 2 chiều trực tiếp
                 </span>
               </div>
 
-              {foundSubmission.feedbacks.length === 0 ? (
+              {displayFeedbacks.length === 0 ? (
                 <div className="p-6 rounded-2xl bg-amber-50/70 border-2 border-dashed border-amber-300 text-center space-y-2">
                   <div className="w-12 h-12 mx-auto rounded-full bg-amber-100 text-amber-700 flex items-center justify-center">
                     <Sparkles className="w-6 h-6 text-amber-500" />
@@ -710,7 +738,7 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
                 </div>
               ) : (
                 <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
-                  {foundSubmission.feedbacks.map((fb) => {
+                  {displayFeedbacks.map((fb) => {
                     const isStudent = fb.senderRole === 'student';
                     return (
                       <div

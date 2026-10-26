@@ -22,6 +22,7 @@ import {
   getDriveDirectStreamUrl, 
   getDrivePreviewUrl 
 } from '../../utils/googleDriveHelpers';
+import { convertBlobToDataUrl } from '../../utils/syncGoogleAppsScript';
 
 interface TeacherDashboardProps {
   submissions: StudentSubmission[];
@@ -267,14 +268,27 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     }
   };
 
-  const handleAddFeedback = (e: React.FormEvent) => {
+  const handleAddFeedback = async (e: React.FormEvent) => {
     e.preventDefault();
     const hasText = teacherReplyText.trim().length > 0;
     const hasAudio = !!(teacherRecorder.base64Audio || teacherRecorder.audioUrl);
     if (!selectedSubmission || (!hasText && !hasAudio)) return;
 
+    // Lấy âm thanh dạng Base64 chắc chắn không bị mất khi lưu và nghe lại
+    let teacherAudio: string | undefined = undefined;
+    if (teacherRecorder.getAudioBase64) {
+      teacherAudio = (await teacherRecorder.getAudioBase64()) || undefined;
+    }
+    if (!teacherAudio && teacherRecorder.audioUrl) {
+      teacherAudio = await convertBlobToDataUrl(teacherRecorder.audioUrl);
+    }
+    if (!teacherAudio && teacherRecorder.base64Audio) {
+      teacherAudio = teacherRecorder.base64Audio;
+    }
+
     const teacherDisplayName = teacherName.trim() || 'Cô Thu Hà (Tư vấn học đường)';
     const nowTime = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    const audioDur = teacherRecorder.audioDuration || teacherRecorder.recordingTime || 0;
 
     const newFeedback: EmotionFeedback = {
       id: 'fb-' + Date.now(),
@@ -286,8 +300,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         'Thầy Cô gửi lời nhắn nhủ, yêu thương bằng giọng nói cho con ở trên nhé! ❤️',
       sticker: selectedSticker,
       timestamp: nowTime,
-      audioUrl: teacherRecorder.base64Audio || teacherRecorder.audioUrl || undefined,
-      audioDuration: teacherRecorder.audioDuration || teacherRecorder.recordingTime,
+      audioUrl: teacherAudio || teacherRecorder.audioUrl || undefined,
+      audioDuration: audioDur,
     };
 
     const teacherNoteAddition = `[${teacherDisplayName}]: ${newFeedback.comment}${selectedSticker ? ` (${selectedSticker})` : ''}${newFeedback.audioUrl ? ' [Kèm giọng nói]' : ''}`;

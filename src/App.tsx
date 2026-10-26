@@ -144,8 +144,8 @@ export default function App() {
     message: string;
   } | null>(null);
 
-  // Teacher dashboard toggle (Mặc định vào thẳng trang Quản trị Admin theo yêu cầu)
-  const [isTeacherDashboardOpen, setIsTeacherDashboardOpen] = useState(true);
+  // Mặc định trang chính đầu tiên là Giao Diện Trạm Cảm Xúc của học sinh theo yêu cầu
+  const [isTeacherDashboardOpen, setIsTeacherDashboardOpen] = useState(false);
 
   // Helper generate random secret code
   const generateSecretCode = (isUrgent: boolean) => {
@@ -256,12 +256,14 @@ export default function App() {
   };
 
   const handleUpdateSubmission = (updated: StudentSubmission) => {
-    setSubmissions((prev) =>
-      prev.map((s) => (s.id === updated.id || s.secretCode === updated.secretCode ? updated : s))
-    );
-    // Lưu ngay lập tức vào IndexedDB và LocalStorage để không bị mất dữ liệu khi tải lại trang
-    saveSubmissionsToIndexedDB([updated]);
-    safeSaveToLocalStorage([updated]);
+    setSubmissions((prev) => {
+      const nextList = prev.map((s) =>
+        s.id === updated.id || s.secretCode === updated.secretCode ? updated : s
+      );
+      saveSubmissionsToIndexedDB(nextList);
+      safeSaveToLocalStorage(nextList);
+      return nextList;
+    });
 
     // Đồng bộ lại khi thầy cô cập nhật trạng thái/phản hồi
     syncSubmissionToAppsScript(updated).catch(() => {});
@@ -281,8 +283,9 @@ export default function App() {
   ) => {
     const nowTime = new Date().toISOString().slice(0, 16).replace('T', ' ');
 
-    setSubmissions((prev) =>
-      prev.map((s) => {
+    setSubmissions((prev) => {
+      let updatedSubRef: StudentSubmission | null = null;
+      const nextList = prev.map((s) => {
         if (s.id === subId || s.secretCode === subId) {
           const studentMsg: EmotionFeedback = {
             id: 'student-fb-' + Date.now(),
@@ -315,25 +318,29 @@ export default function App() {
             studentReplyDuration: replyAudioDuration || s.studentReplyDuration,
             feedbacks: [studentMsg, ...(s.feedbacks || [])],
           };
-
-          // Lưu ngay lập tức vào IndexedDB và LocalStorage
-          saveSubmissionsToIndexedDB([updatedSub]);
-          safeSaveToLocalStorage([updatedSub]);
-
-          // Đồng bộ ngầm lên Google Apps Script & Server
-          syncSubmissionToAppsScript(updatedSub).catch(() => {});
-          const targetId = updatedSub.id || updatedSub.secretCode;
-          fetch(`/api/submissions/${encodeURIComponent(targetId)}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(updatedSub),
-          }).catch(() => {});
-
+          updatedSubRef = updatedSub;
           return updatedSub;
         }
         return s;
-      })
-    );
+      });
+
+      // Lưu ngay lập tức toàn bộ danh sách vào IndexedDB và LocalStorage
+      saveSubmissionsToIndexedDB(nextList);
+      safeSaveToLocalStorage(nextList);
+
+      if (updatedSubRef) {
+        // Đồng bộ ngầm lên Google Apps Script & Server
+        syncSubmissionToAppsScript(updatedSubRef).catch(() => {});
+        const targetId = (updatedSubRef as StudentSubmission).id || (updatedSubRef as StudentSubmission).secretCode;
+        fetch(`/api/submissions/${encodeURIComponent(targetId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updatedSubRef),
+        }).catch(() => {});
+      }
+
+      return nextList;
+    });
   };
 
   // Emotion card click

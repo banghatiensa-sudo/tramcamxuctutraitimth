@@ -10,6 +10,7 @@ export interface AudioRecorderHook {
   startRecording: () => Promise<boolean>;
   stopRecording: () => void;
   resetRecording: () => void;
+  getAudioBase64: () => Promise<string | null>;
 }
 
 export function useAudioRecorder(): AudioRecorderHook {
@@ -22,6 +23,7 @@ export function useAudioRecorder(): AudioRecorderHook {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const lastBlobRef = useRef<Blob | null>(null);
   const timerIntervalRef = useRef<number | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
@@ -39,16 +41,14 @@ export function useAudioRecorder(): AudioRecorderHook {
   useEffect(() => {
     return () => {
       cleanup();
-      if (audioUrl && audioUrl.startsWith('blob:')) {
-        URL.revokeObjectURL(audioUrl);
-      }
     };
-  }, [cleanup, audioUrl]);
+  }, [cleanup]);
 
   const startRecording = useCallback(async (): Promise<boolean> => {
     setError(null);
     cleanup();
     audioChunksRef.current = [];
+    lastBlobRef.current = null;
     setAudioUrl(null);
     setBase64Audio(null);
     setRecordingTime(0);
@@ -93,6 +93,7 @@ export function useAudioRecorder(): AudioRecorderHook {
       recorder.onstop = () => {
         const cleanType = (recorder.mimeType || selectedMimeType || 'audio/webm').split(';')[0].trim() || 'audio/webm';
         const audioBlob = new Blob(audioChunksRef.current, { type: cleanType });
+        lastBlobRef.current = audioBlob;
         const blobUrl = URL.createObjectURL(audioBlob);
         setAudioUrl(blobUrl);
 
@@ -146,16 +147,35 @@ export function useAudioRecorder(): AudioRecorderHook {
 
   const resetRecording = useCallback(() => {
     cleanup();
-    if (audioUrl && audioUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(audioUrl);
-    }
     setIsRecording(false);
     setRecordingTime(0);
     setAudioUrl(null);
     setBase64Audio(null);
     setAudioDuration(0);
     setError(null);
-  }, [cleanup, audioUrl]);
+  }, [cleanup]);
+
+  const getAudioBase64 = useCallback(async (): Promise<string | null> => {
+    if (base64Audio) return base64Audio;
+    if (lastBlobRef.current) {
+      return new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          if (typeof reader.result === 'string') {
+            setBase64Audio(reader.result);
+            resolve(reader.result);
+          } else {
+            resolve('');
+          }
+        };
+        reader.readAsDataURL(lastBlobRef.current!);
+      });
+    }
+    if (audioUrl && audioUrl.startsWith('data:')) {
+      return audioUrl;
+    }
+    return null;
+  }, [base64Audio, audioUrl]);
 
   return {
     isRecording,
@@ -167,5 +187,6 @@ export function useAudioRecorder(): AudioRecorderHook {
     startRecording,
     stopRecording,
     resetRecording,
+    getAudioBase64,
   };
 }
