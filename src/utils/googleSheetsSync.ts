@@ -3,60 +3,100 @@ import { StudentSubmission, EmotionType, ProcessingStatus, SubmissionCategory, E
 /**
  * Phân tích và tạo mảng EmotionFeedback từ chuỗi ghi chú / phản hồi lưu trong Google Sheet
  */
-export function parseFeedbacksFromNote(note?: string, defaultStudentName?: string): EmotionFeedback[] {
-  if (!note || !note.trim()) return [];
-  const parts = note.split(/\s*\|\s*/).map((p) => p.trim()).filter(Boolean);
+export function parseFeedbacksFromNote(
+  note?: string,
+  defaultStudentName?: string,
+  studentReplyAudioUrl?: string
+): EmotionFeedback[] {
   const feedbacks: EmotionFeedback[] = [];
 
-  parts.forEach((part, idx) => {
-    if (part.startsWith('[Bé nhắn lại]:') || part.startsWith('[Học sinh nhắn lại]:') || part.startsWith('[Bé:')) {
-      const text = part.replace(/^\[(Bé nhắn lại|Học sinh nhắn lại|Bé)\]:\s*/, '').trim();
+  if (note && note.trim()) {
+    const parts = note.split(/\s*\|\s*/).map((p) => p.trim()).filter(Boolean);
+
+    parts.forEach((part, idx) => {
+      // Trích xuất link Google Drive / http / data URL nếu có trong phần ghi chú
+      const urlMatch = part.match(/(https?:\/\/[^\s\]\)]+|data:audio\/[^\s\]\)]+)/);
+      const audioUrlFromPart = urlMatch ? urlMatch[0].replace(/[\]\)\,\.]+$/, '') : undefined;
+      const durationMatch = part.match(/\((\d+)\s*s\)/i);
+      const duration = durationMatch ? parseInt(durationMatch[1], 10) : undefined;
+
+      if (part.startsWith('[Bé nhắn lại]:') || part.startsWith('[Học sinh nhắn lại]:') || part.startsWith('[Bé:')) {
+        const text = part.replace(/^\[(Bé nhắn lại|Học sinh nhắn lại|Bé)\]:\s*/, '').trim();
+        feedbacks.push({
+          id: `fb-note-student-${idx}-${text.slice(0, 10)}`,
+          senderRole: 'student',
+          senderName: defaultStudentName || 'Học sinh',
+          teacherName: defaultStudentName || 'Học sinh',
+          comment: text,
+          timestamp: 'Trước đó',
+          audioUrl: audioUrlFromPart || (idx === parts.length - 1 ? studentReplyAudioUrl : undefined),
+          audioDuration: duration,
+        });
+      } else if (part.startsWith('[Bé gửi ghi âm') || part.startsWith('[Học sinh gửi ghi âm')) {
+        feedbacks.push({
+          id: `fb-note-student-audio-${idx}`,
+          senderRole: 'student',
+          senderName: defaultStudentName || 'Học sinh',
+          teacherName: defaultStudentName || 'Học sinh',
+          comment: 'Bé đã gửi một đoạn ghi âm giọng nói nhắn lại Thầy Cô.',
+          timestamp: 'Trước đó',
+          audioUrl: audioUrlFromPart || studentReplyAudioUrl,
+          audioDuration: duration,
+        });
+      } else if (part.startsWith('[Cô ') || part.startsWith('[Thầy ') || part.startsWith('[Thầy Cô') || part.startsWith('[Admin')) {
+        const match = part.match(/^\[([^\]]+)\]:\s*(.*)$/);
+        const teacher = match ? match[1] : 'Thầy Cô Tư Vấn';
+        const text = match ? match[2] : part;
+        feedbacks.push({
+          id: `fb-note-teacher-${idx}-${text.slice(0, 10)}`,
+          senderRole: 'teacher',
+          senderName: teacher,
+          teacherName: teacher,
+          comment: text,
+          timestamp: 'Trước đó',
+          audioUrl: audioUrlFromPart,
+          audioDuration: duration,
+        });
+      } else if (part.length > 0) {
+        feedbacks.push({
+          id: `fb-note-gen-${idx}-${part.slice(0, 10)}`,
+          senderRole: 'teacher',
+          senderName: 'Thầy Cô Tư Vấn',
+          teacherName: 'Thầy Cô Tư Vấn',
+          comment: part,
+          timestamp: 'Trước đó',
+          audioUrl: audioUrlFromPart,
+          audioDuration: duration,
+        });
+      }
+    });
+  }
+
+  // Nếu có studentReplyAudioUrl mà chưa có tin nhắn học sinh nào gắn link âm thanh này
+  if (studentReplyAudioUrl) {
+    const studentFb = feedbacks.find((f) => f.senderRole === 'student');
+    if (studentFb) {
+      if (!studentFb.audioUrl) {
+        studentFb.audioUrl = studentReplyAudioUrl;
+      }
+    } else {
       feedbacks.push({
-        id: `fb-note-student-${idx}-${text.slice(0, 10)}`,
+        id: `fb-student-reply-audio-direct`,
         senderRole: 'student',
         senderName: defaultStudentName || 'Học sinh',
         teacherName: defaultStudentName || 'Học sinh',
-        comment: text,
+        comment: 'Bé đã gửi một đoạn ghi âm giọng nói nhắn lại Thầy Cô.',
         timestamp: 'Trước đó',
-      });
-    } else if (part.startsWith('[Bé gửi ghi âm') || part.startsWith('[Học sinh gửi ghi âm')) {
-      feedbacks.push({
-        id: `fb-note-student-audio-${idx}`,
-        senderRole: 'student',
-        senderName: defaultStudentName || 'Học sinh',
-        teacherName: defaultStudentName || 'Học sinh',
-        comment: 'Đã gửi một đoạn ghi âm giọng nói tâm sự với Thầy Cô.',
-        timestamp: 'Trước đó',
-      });
-    } else if (part.startsWith('[Cô ') || part.startsWith('[Thầy ') || part.startsWith('[Thầy Cô') || part.startsWith('[Admin')) {
-      const match = part.match(/^\[([^\]]+)\]:\s*(.*)$/);
-      const teacher = match ? match[1] : 'Thầy Cô Tư Vấn';
-      const text = match ? match[2] : part;
-      feedbacks.push({
-        id: `fb-note-teacher-${idx}-${text.slice(0, 10)}`,
-        senderRole: 'teacher',
-        senderName: teacher,
-        teacherName: teacher,
-        comment: text,
-        timestamp: 'Trước đó',
-      });
-    } else if (part.length > 0) {
-      feedbacks.push({
-        id: `fb-note-gen-${idx}-${part.slice(0, 10)}`,
-        senderRole: 'teacher',
-        senderName: 'Thầy Cô Tư Vấn',
-        teacherName: 'Thầy Cô Tư Vấn',
-        comment: part,
-        timestamp: 'Trước đó',
+        audioUrl: studentReplyAudioUrl,
       });
     }
-  });
+  }
 
   return feedbacks;
 }
 
 export const DEFAULT_WEBHOOK_URL =
-  'https://script.google.com/macros/s/AKfycbzuEvZHEoLqKjI15d9XbR0GvHMGFXo_cZRO9YYF_Zz3B9un-bbudJJAxTZIxdDzqbc/exec';
+  'https://script.google.com/macros/s/AKfycbzUlu-5ClA4_pNBqrdvKWfedNX6FQGjRMnsXF8IXdgZG6ru8SdHi2hyKclGA_Uyauw/exec';
 
 export const STORAGE_WEBHOOK_KEY = 'tram_cam_xuc_webhook_url';
 export const STORAGE_SHEET_KEY = 'tram_cam_xuc_sheet_url';
@@ -66,7 +106,11 @@ export function getSavedWebhookUrl(): string {
   try {
     const stored = localStorage.getItem(STORAGE_WEBHOOK_KEY);
     // Tự động chuyển đổi nếu chưa có hoặc đang chứa URL cũ
-    if (!stored || stored.includes('AKfycbwdLkyRxhPvjDvtk6K-fbrV6zInYP_hgPE0fd_lprNoPuNB6Nbum1cznD_jtXA_x34')) {
+    if (
+      !stored ||
+      stored.includes('AKfycbwdLkyRxhPvjDvtk6K') ||
+      stored.includes('AKfycbzuEvZHEoLqKjI15d9XbR0GvHMGFXo_cZRO9YYF_Zz3B9un-bbudJJAxTZIxdDzqbc')
+    ) {
       localStorage.setItem(STORAGE_WEBHOOK_KEY, DEFAULT_WEBHOOK_URL);
       return DEFAULT_WEBHOOK_URL;
     }
@@ -218,6 +262,16 @@ export function parseGvizTableObject(data: any): StudentSubmission[] {
       }
     }
 
+    // Trích xuất studentReplyAudioUrl từ ghi chú nếu có
+    let studentReplyAudioUrl: string | undefined = undefined;
+    if (note) {
+      const matchReplyAudio = note.match(/\[(?:Bé gửi ghi âm|Học sinh gửi ghi âm)[^\]]*\]:\s*(https?:\/\/[^\s]+|data:audio\/[^\s]+)/i) ||
+                              note.match(/\[(?:Bé nhắn lại|Học sinh nhắn lại)[^\]]*\]:[^|]*?(https?:\/\/[^\s]+drive\.google\.com[^\s]+)/i);
+      if (matchReplyAudio) {
+        studentReplyAudioUrl = matchReplyAudio[1].replace(/[\]\)\,\.]+$/, '');
+      }
+    }
+
     submissions.push({
       id: `gviz-${rIdx}-${secretCode}`,
       secretCode,
@@ -234,7 +288,8 @@ export function parseGvizTableObject(data: any): StudentSubmission[] {
       status: normalizeStatus(statusText),
       teacherNote: note || undefined,
       timestamp: time,
-      feedbacks: parseFeedbacksFromNote(note, studentName),
+      studentReplyAudioUrl,
+      feedbacks: parseFeedbacksFromNote(note, studentName, studentReplyAudioUrl),
     });
   });
 
@@ -381,6 +436,16 @@ export function parseCsvData(csvText: string): StudentSubmission[] {
         }
       }
 
+      // Trích xuất studentReplyAudioUrl từ ghi chú nếu có
+      let studentReplyAudioUrl: string | undefined = undefined;
+      if (note) {
+        const matchReplyAudio = note.match(/\[(?:Bé gửi ghi âm|Học sinh gửi ghi âm)[^\]]*\]:\s*(https?:\/\/[^\s]+|data:audio\/[^\s]+)/i) ||
+                                note.match(/\[(?:Bé nhắn lại|Học sinh nhắn lại)[^\]]*\]:[^|]*?(https?:\/\/[^\s]+drive\.google\.com[^\s]+)/i);
+        if (matchReplyAudio) {
+          studentReplyAudioUrl = matchReplyAudio[1].replace(/[\]\)\,\.]+$/, '');
+        }
+      }
+
       submissions.push({
         id: `csv-${i}-${secretCode}`,
         secretCode,
@@ -397,7 +462,8 @@ export function parseCsvData(csvText: string): StudentSubmission[] {
         status,
         teacherNote: note || undefined,
         timestamp: time,
-        feedbacks: parseFeedbacksFromNote(note, studentName),
+        studentReplyAudioUrl,
+        feedbacks: parseFeedbacksFromNote(note, studentName, studentReplyAudioUrl),
       });
     }
 
@@ -531,13 +597,21 @@ export async function fetchSubmissionsFromGoogleSheet(options?: {
       if (res.ok) {
         const data = await res.json();
         if (data && data.submissions && Array.isArray(data.submissions)) {
-          const processedList = data.submissions.map((s: any) => ({
-            ...s,
-            feedbacks:
-              s.feedbacks && s.feedbacks.length > 0
-                ? s.feedbacks
-                : parseFeedbacksFromNote(s.teacherNote, s.studentName),
-          }));
+          const processedList = data.submissions.map((s: any) => {
+            let replyAudio = s.studentReplyAudioUrl;
+            if (!replyAudio && s.teacherNote) {
+              const match = s.teacherNote.match(/\[(?:Bé gửi ghi âm|Học sinh gửi ghi âm)[^\]]*\]:\s*(https?:\/\/[^\s]+|data:audio\/[^\s]+)/i);
+              if (match) replyAudio = match[1].replace(/[\]\)\,\.]+$/, '');
+            }
+            return {
+              ...s,
+              studentReplyAudioUrl: replyAudio || s.studentReplyAudioUrl,
+              feedbacks:
+                s.feedbacks && s.feedbacks.length > 0
+                  ? s.feedbacks
+                  : parseFeedbacksFromNote(s.teacherNote, s.studentName, replyAudio || s.studentReplyAudioUrl),
+            };
+          });
           if (processedList.length > 0) {
             return {
               success: true,

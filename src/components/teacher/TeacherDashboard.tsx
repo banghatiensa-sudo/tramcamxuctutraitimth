@@ -44,8 +44,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     return localStorage.getItem('tram_cam_xuc_admin_pass') || 'tramcamxuc2026';
   });
 
-  // Mặc định đăng nhập trực tiếp vào trang quản trị Admin theo yêu cầu
-  const [isAuthenticated, setIsAuthenticated] = useState(true);
+  // Yêu cầu đăng nhập tài khoản, mật khẩu quản trị Admin theo yêu cầu
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [usernameInput, setUsernameInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [authError, setAuthError] = useState(false);
@@ -1005,42 +1005,47 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 </div>
               )}
 
-              {/* Nếu bé có gửi ghi âm nhắn lại */}
-              {selectedSubmission.studentReplyAudioUrl && (
-                <div className="p-3 bg-pink-50 rounded-xl border border-pink-200 flex flex-wrap items-center justify-between gap-2 mb-2">
-                  <div className="flex items-center gap-2 text-xs font-bold text-pink-700">
-                    <Volume2 size={16} />
-                    <span>Giọng nói bé nhắn lại ({selectedSubmission.studentReplyDuration || 0}s)</span>
-                    {isGoogleDriveUrl(selectedSubmission.studentReplyAudioUrl) && (
-                      <span className="px-2 py-0.5 rounded-md bg-pink-100 text-[10px] text-pink-800 font-semibold">
-                        Google Drive
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleToggleAudio('reply-' + selectedSubmission.id, selectedSubmission.studentReplyAudioUrl!)}
-                      className="px-3 py-1.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
-                    >
-                      {playingAudioId === 'reply-' + selectedSubmission.id ? <Pause size={14} /> : <Play size={14} />}
-                      <span>{playingAudioId === 'reply-' + selectedSubmission.id ? 'Tạm dừng' : 'Nghe giọng bé'}</span>
-                    </button>
-                    {isGoogleDriveUrl(selectedSubmission.studentReplyAudioUrl) && (
-                      <a
-                        href={getDrivePreviewUrl(selectedSubmission.studentReplyAudioUrl)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="px-2.5 py-1.5 rounded-xl bg-pink-100 hover:bg-pink-200 text-pink-800 font-bold text-xs flex items-center gap-1"
-                        title="Mở file trên Google Drive"
+              {/* Nếu bé có gửi ghi âm nhắn lại (từ studentReplyAudioUrl hoặc từ mảng feedbacks) */}
+              {(() => {
+                const replyAudio = selectedSubmission.studentReplyAudioUrl || selectedSubmission.feedbacks?.find((f) => f.senderRole === 'student' && f.audioUrl)?.audioUrl;
+                const replyDuration = selectedSubmission.studentReplyDuration || selectedSubmission.feedbacks?.find((f) => f.senderRole === 'student' && f.audioUrl)?.audioDuration || 0;
+                if (!replyAudio) return null;
+                return (
+                  <div className="p-3 bg-pink-50 rounded-xl border border-pink-200 flex flex-wrap items-center justify-between gap-2 mb-2">
+                    <div className="flex items-center gap-2 text-xs font-bold text-pink-700">
+                      <Volume2 size={16} />
+                      <span>Giọng nói bé nhắn lại ({replyDuration}s)</span>
+                      {isGoogleDriveUrl(replyAudio) && (
+                        <span className="px-2 py-0.5 rounded-md bg-pink-100 text-[10px] text-pink-800 font-semibold">
+                          Google Drive
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleAudio('reply-' + selectedSubmission.id, replyAudio)}
+                        className="px-3 py-1.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
                       >
-                        <ExternalLink size={12} />
-                        <span>Mở Drive</span>
-                      </a>
-                    )}
+                        {playingAudioId === 'reply-' + selectedSubmission.id ? <Pause size={14} /> : <Play size={14} />}
+                        <span>{playingAudioId === 'reply-' + selectedSubmission.id ? 'Tạm dừng' : 'Nghe giọng bé'}</span>
+                      </button>
+                      {isGoogleDriveUrl(replyAudio) && (
+                        <a
+                          href={getDrivePreviewUrl(replyAudio)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="px-2.5 py-1.5 rounded-xl bg-pink-100 hover:bg-pink-200 text-pink-800 font-bold text-xs flex items-center gap-1"
+                          title="Mở file trên Google Drive"
+                        >
+                          <ExternalLink size={12} />
+                          <span>Mở Drive</span>
+                        </a>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Nếu có tranh ảnh */}
               {selectedSubmission.imageUrl && (
@@ -1321,7 +1326,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         <p className="text-slate-800 leading-relaxed font-medium pl-8">{fb.comment}</p>
 
                         {fb.audioUrl && (
-                          <div className="pl-8 pt-1 flex items-center gap-2">
+                          <div className="pl-8 pt-1 flex flex-wrap items-center gap-2">
                             <button
                               type="button"
                               onClick={() => handleToggleAudio('fb-' + fb.id, fb.audioUrl!)}
@@ -1340,6 +1345,18 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                   : `Nghe lời dặn dò (${fb.audioDuration || 0}s)`}
                               </span>
                             </button>
+                            {isGoogleDriveUrl(fb.audioUrl) && (
+                              <a
+                                href={getDrivePreviewUrl(fb.audioUrl)}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] flex items-center gap-1"
+                                title="Mở file trên Google Drive"
+                              >
+                                <ExternalLink size={12} />
+                                <span>Drive</span>
+                              </a>
+                            )}
                           </div>
                         )}
 

@@ -1,7 +1,7 @@
 import { StudentSubmission } from '../types/emotion';
 
 export const APPS_SCRIPT_WEBHOOK_URL =
-  'https://script.google.com/macros/s/AKfycbzuEvZHEoLqKjI15d9XbR0GvHMGFXo_cZRO9YYF_Zz3B9un-bbudJJAxTZIxdDzqbc/exec';
+  'https://script.google.com/macros/s/AKfycbzUlu-5ClA4_pNBqrdvKWfedNX6FQGjRMnsXF8IXdgZG6ru8SdHi2hyKclGA_Uyauw/exec';
 
 /**
  * Chuyển đổi blob URL thành chuỗi Base64 Data URL hoàn chỉnh để gửi tới Google Apps Script

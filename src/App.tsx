@@ -299,10 +299,11 @@ export default function App() {
             audioDuration: replyAudioDuration,
           };
 
+          const isDataUrl = replyAudioUrl?.startsWith('data:');
           const noteAddition = replyText.trim()
-            ? `[Bé nhắn lại]: ${replyText.trim()}`
+            ? `[Bé nhắn lại]: ${replyText.trim()}${replyAudioUrl ? ` [Bé gửi ghi âm (${replyAudioDuration || 0}s)${!isDataUrl ? ': ' + replyAudioUrl : ''}]` : ''}`
             : replyAudioUrl
-            ? `[Bé gửi ghi âm giọng nói (${replyAudioDuration || 0}s)]`
+            ? `[Bé gửi ghi âm giọng nói (${replyAudioDuration || 0}s)${!isDataUrl ? ': ' + replyAudioUrl : ''}]`
             : '';
 
           const updatedSub: StudentSubmission = {

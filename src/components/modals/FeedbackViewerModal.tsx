@@ -22,10 +22,17 @@ import {
   Volume2,
   CheckCircle2,
   Video,
+  ExternalLink,
 } from 'lucide-react';
 import { StudentSubmission } from '../../types/emotion';
 import { useAudioRecorder } from '../../utils/useAudioRecorder';
 import { playReplySuccessSound } from '../../utils/soundEffects';
+import { 
+  isGoogleDriveUrl, 
+  getDriveDirectStreamUrl, 
+  getDrivePreviewUrl 
+} from '../../utils/googleDriveHelpers';
+import { convertBlobToDataUrl } from '../../utils/syncGoogleAppsScript';
 
 interface FeedbackViewerModalProps {
   isOpen: boolean;
@@ -221,26 +228,48 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
       setPlayingStudentSubmissionAudio(false);
     } else {
       stopAllAudio();
-      const audio = new Audio(url);
+      const streamUrl = isGoogleDriveUrl(url) ? getDriveDirectStreamUrl(url) : url;
+      const audio = new Audio(streamUrl);
       studentSubAudioRef.current = audio;
       audio.onended = () => setPlayingStudentSubmissionAudio(false);
-      audio.onerror = () => setPlayingStudentSubmissionAudio(false);
-      audio.play().catch(() => setPlayingStudentSubmissionAudio(false));
+      audio.onerror = () => {
+        if (isGoogleDriveUrl(url)) {
+          window.open(getDrivePreviewUrl(url), '_blank');
+        }
+        setPlayingStudentSubmissionAudio(false);
+      };
+      audio.play().catch(() => {
+        if (isGoogleDriveUrl(url)) {
+          window.open(getDrivePreviewUrl(url), '_blank');
+        }
+        setPlayingStudentSubmissionAudio(false);
+      });
       setPlayingStudentSubmissionAudio(true);
     }
   };
 
-  // Phát âm thanh thư của Thầy Cô
+  // Phát âm thanh trao đổi (thư dặn dò của Thầy Cô hoặc giọng nói của chính bé nhắn lại)
   const handleTogglePlayTeacherAudio = (id: string, url: string) => {
     if (activeAudioPlaying === id) {
       activeAudioRef.current?.pause();
       setActiveAudioPlaying(null);
     } else {
       stopAllAudio();
-      const audio = new Audio(url);
+      const streamUrl = isGoogleDriveUrl(url) ? getDriveDirectStreamUrl(url) : url;
+      const audio = new Audio(streamUrl);
       audio.onended = () => setActiveAudioPlaying(null);
-      audio.onerror = () => setActiveAudioPlaying(null);
-      audio.play().catch(() => {});
+      audio.onerror = () => {
+        if (isGoogleDriveUrl(url)) {
+          window.open(getDrivePreviewUrl(url), '_blank');
+        }
+        setActiveAudioPlaying(null);
+      };
+      audio.play().catch(() => {
+        if (isGoogleDriveUrl(url)) {
+          window.open(getDrivePreviewUrl(url), '_blank');
+        }
+        setActiveAudioPlaying(null);
+      });
       activeAudioRef.current = audio;
       setActiveAudioPlaying(id);
     }
@@ -320,14 +349,19 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
   };
 
   // Gửi phản hồi (bằng chữ hoặc bằng giọng nói cho học sinh lớp 1, 2)
-  const handleSendReply = (e: React.FormEvent) => {
+  const handleSendReply = async (e: React.FormEvent) => {
     e.preventDefault();
     const hasText = replyInput.trim().length > 0;
     const hasAudio = !!(studentRecorder.base64Audio || studentRecorder.audioUrl);
 
     if ((!hasText && !hasAudio) || !foundSubmission || !onSendStudentReply) return;
 
-    const studentAudio = studentRecorder.base64Audio || studentRecorder.audioUrl;
+    // Đảm bảo audio luôn là Base64 Data URL để lưu vĩnh viễn không bị mất khi đóng tab
+    let studentAudio = studentRecorder.base64Audio;
+    if (!studentAudio && studentRecorder.audioUrl) {
+      studentAudio = (await convertBlobToDataUrl(studentRecorder.audioUrl)) || studentRecorder.audioUrl;
+    }
+
     const studentDuration = studentRecorder.audioDuration || studentRecorder.recordingTime;
     const text = replyInput.trim();
 
@@ -354,6 +388,8 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
       prev
         ? {
             ...prev,
+            studentReplyAudioUrl: studentAudio || prev.studentReplyAudioUrl,
+            studentReplyDuration: studentDuration || prev.studentReplyDuration,
             feedbacks: [newStudentFb, ...(prev.feedbacks || [])],
           }
         : null
@@ -586,18 +622,32 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
                       <Volume2 size={16} className="text-sky-600" />
                       <span>Đoạn giọng nói em đã ghi âm ({foundSubmission.audioDuration || 0}s)</span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleTogglePlayStudentSubmissionAudio(foundSubmission.audioUrl!)}
-                      className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs ${
-                        playingStudentSubmissionAudio
-                          ? 'bg-rose-500 text-white animate-pulse'
-                          : 'bg-sky-500 hover:bg-sky-600 text-white'
-                      }`}
-                    >
-                      {playingStudentSubmissionAudio ? <Pause size={13} /> : <Play size={13} />}
-                      <span>{playingStudentSubmissionAudio ? 'Tạm dừng' : 'Bấm nghe lại'}</span>
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleTogglePlayStudentSubmissionAudio(foundSubmission.audioUrl!)}
+                        className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs ${
+                          playingStudentSubmissionAudio
+                            ? 'bg-rose-500 text-white animate-pulse'
+                            : 'bg-sky-500 hover:bg-sky-600 text-white'
+                        }`}
+                      >
+                        {playingStudentSubmissionAudio ? <Pause size={13} /> : <Play size={13} />}
+                        <span>{playingStudentSubmissionAudio ? 'Tạm dừng' : 'Bấm nghe lại'}</span>
+                      </button>
+                      {isGoogleDriveUrl(foundSubmission.audioUrl) && (
+                        <a
+                          href={getDrivePreviewUrl(foundSubmission.audioUrl)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="px-2.5 py-1.5 rounded-xl bg-sky-100 hover:bg-sky-200 text-sky-800 font-bold text-xs flex items-center gap-1"
+                          title="Mở file trên Google Drive"
+                        >
+                          <ExternalLink size={12} />
+                          <span>Mở Drive</span>
+                        </a>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -736,26 +786,44 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
                               </div>
                             </div>
 
-                            <button
-                              type="button"
-                              onClick={() => handleTogglePlayTeacherAudio(fb.id, fb.audioUrl!)}
-                              className={`px-3.5 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs ${
-                                activeAudioPlaying === fb.id
-                                  ? 'bg-rose-500 text-white animate-pulse'
-                                  : isStudent
-                                  ? 'bg-sky-600 hover:bg-sky-700 text-white'
-                                  : 'bg-amber-500 hover:bg-amber-600 text-white'
-                              }`}
-                            >
-                              {activeAudioPlaying === fb.id ? <Pause size={14} /> : <Play size={14} />}
-                              <span>
-                                {activeAudioPlaying === fb.id
-                                  ? 'Tạm dừng'
-                                  : isStudent
-                                  ? 'Nghe lại giọng em'
-                                  : 'Bấm nghe giọng cô'}
-                              </span>
-                            </button>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handleTogglePlayTeacherAudio(fb.id, fb.audioUrl!)}
+                                className={`px-3.5 py-1.5 rounded-xl font-black text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs ${
+                                  activeAudioPlaying === fb.id
+                                    ? 'bg-rose-500 text-white animate-pulse'
+                                    : isStudent
+                                    ? 'bg-sky-600 hover:bg-sky-700 text-white'
+                                    : 'bg-amber-500 hover:bg-amber-600 text-white'
+                                }`}
+                              >
+                                {activeAudioPlaying === fb.id ? <Pause size={14} /> : <Play size={14} />}
+                                <span>
+                                  {activeAudioPlaying === fb.id
+                                    ? 'Tạm dừng'
+                                    : isStudent
+                                    ? 'Nghe lại giọng em'
+                                    : 'Bấm nghe giọng cô'}
+                                </span>
+                              </button>
+                              {isGoogleDriveUrl(fb.audioUrl) && (
+                                <a
+                                  href={getDrivePreviewUrl(fb.audioUrl)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className={`px-2.5 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1 shadow-xs ${
+                                    isStudent
+                                      ? 'bg-sky-200 hover:bg-sky-300 text-sky-900'
+                                      : 'bg-amber-100 hover:bg-amber-200 text-amber-900'
+                                  }`}
+                                  title="Mở file trên Google Drive"
+                                >
+                                  <ExternalLink size={12} />
+                                  <span>Drive</span>
+                                </a>
+                              )}
+                            </div>
                           </div>
                         )}
 

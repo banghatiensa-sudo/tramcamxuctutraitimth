@@ -125,6 +125,12 @@ function doGet(e) {
         imageUrl = mediaUrl.toString();
       }
 
+      var replyAudioUrl = "";
+      var matchReply = (note || "").match(/\[(?:Bé gửi ghi âm|Học sinh gửi ghi âm)[^\]]*\]:\s*(https?:\/\/[^\s\]\)]+|data:audio\/[^\s\]\)]+)/i);
+      if (matchReply && matchReply[1]) {
+        replyAudioUrl = matchReply[1].replace(/[\]\)\,\.]+$/, "");
+      }
+
       list.push({
         id: "sheet-row-" + r + "-" + secretCode,
         secretCode: secretCode,
@@ -135,6 +141,7 @@ function doGet(e) {
         title: title.toString(),
         content: content.toString(),
         audioUrl: audioUrl.toString() || undefined,
+        studentReplyAudioUrl: replyAudioUrl || undefined,
         imageUrl: imageUrl || undefined,
         videoUrl: videoUrl || undefined,
         isUrgent: isUrgent,
@@ -163,7 +170,7 @@ function doGet(e) {
   }
 }
 
-// 2. HÀM GHI BÀI CHIA SẺ MỚI VÀO GOOGLE SHEET & LƯU TỆP VÀO GOOGLE DRIVE
+// 2. HÀM GHI BÀI CHIA SẺ MỚI & LƯU TỆP GHI ÂM/ẢNH/VIDEO/PHẢN HỒI VÀO GOOGLE DRIVE
 function doPost(e) {
   var lock = LockService.getScriptLock();
   lock.tryLock(30000);
@@ -228,6 +235,7 @@ function doPost(e) {
       var item = submissions[i];
       var secretCode = item.secretCode || ("TCX-" + Math.floor(1000 + Math.random() * 9000));
 
+      // 1. Lưu ghi âm bài gốc của học sinh vào Google Drive
       var driveAudioUrl = "";
       var audioData = item.audioBase64 || item.audioUrl;
       if (audioData && audioData.indexOf("base64,") !== -1) {
@@ -248,6 +256,28 @@ function doPost(e) {
         driveAudioUrl = audioData;
       }
 
+      // 2. Lưu ghi âm học sinh phản hồi lại vào Google Drive
+      var driveReplyAudioUrl = "";
+      var replyAudioData = item.replyAudioBase64 || item.studentReplyAudioUrl;
+      if (replyAudioData && replyAudioData.indexOf("base64,") !== -1) {
+        try {
+          var replyParts = replyAudioData.split("base64,");
+          var rHeader = replyParts[0];
+          var replyMime = rHeader.indexOf(":") !== -1 ? rHeader.split(":")[1].split(";")[0] : "audio/webm";
+          var replyBytes = Utilities.base64Decode(replyParts[1]);
+          var replyFileName = "GhiAm_PhanHoi_" + secretCode + "_" + Utilities.formatDate(new Date(), "GMT+7", "yyyyMMdd_HHmmss") + ".webm";
+          var replyBlob = Utilities.newBlob(replyBytes, replyMime, replyFileName);
+          var replyFile = targetFolder.createFile(replyBlob);
+          replyFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+          driveReplyAudioUrl = replyFile.getUrl();
+        } catch (errReplyAudio) {
+          driveReplyAudioUrl = "Lỗi lưu reply audio: " + errReplyAudio.toString();
+        }
+      } else if (replyAudioData && replyAudioData.indexOf("http") === 0) {
+        driveReplyAudioUrl = replyAudioData;
+      }
+
+      // 3. Lưu hình ảnh hoặc video vào Google Drive
       var driveImageUrl = "";
       var mediaData = item.photoBase64 || item.videoBase64 || item.imageUrl || item.videoUrl;
       if (mediaData && mediaData.indexOf("base64,") !== -1) {
@@ -271,48 +301,85 @@ function doPost(e) {
         driveImageUrl = mediaData;
       }
 
-      var nextRow = sheet.getLastRow() + 1;
-      var priorityText = item.isUrgent ? "KHẨN CẤP (SOS)" : "Bình thường";
-      var targetLength = Math.max(existingHeaders.length, 14);
-      var rowData = new Array(targetLength).fill("");
+      var currentNote = item.teacherNote || "";
+      if (driveReplyAudioUrl && currentNote.indexOf(driveReplyAudioUrl) === -1) {
+        var replyTag = "[Bé gửi ghi âm: " + driveReplyAudioUrl + "]";
+        currentNote = currentNote ? currentNote + " | " + replyTag : replyTag;
+      }
 
-      if (colMap["stt"] !== undefined) rowData[colMap["stt"]] = nextRow - 1;
-      else rowData[0] = nextRow - 1;
+      // 4. Kiểm tra xem mã bí mật này đã có dòng trong bảng chưa (tránh trùng lặp khi trao đổi qua lại)
+      var existingRowIndex = -1;
+      var curLastRow = sheet.getLastRow();
+      if (curLastRow > 1) {
+        var codeCol = colMap["code"] !== undefined ? colMap["code"] + 1 : 2;
+        var codeRange = sheet.getRange(2, codeCol, curLastRow - 1, 1).getValues();
+        for (var cIdx = 0; cIdx < codeRange.length; cIdx++) {
+          if ((codeRange[cIdx][0] || "").toString().trim().toUpperCase() === secretCode.toUpperCase()) {
+            existingRowIndex = cIdx + 2;
+            break;
+          }
+        }
+      }
 
-      if (colMap["code"] !== undefined) rowData[colMap["code"]] = secretCode;
-      else rowData[1] = secretCode;
+      if (existingRowIndex !== -1) {
+        // Cập nhật dòng hiện có
+        if (colMap["note"] !== undefined && currentNote) {
+          sheet.getRange(existingRowIndex, colMap["note"] + 1).setValue(currentNote);
+        }
+        if (colMap["status"] !== undefined && item.status) {
+          sheet.getRange(existingRowIndex, colMap["status"] + 1).setValue(item.status);
+        }
+        if (colMap["audio"] !== undefined && driveAudioUrl) {
+          sheet.getRange(existingRowIndex, colMap["audio"] + 1).setValue(driveAudioUrl);
+        }
+        if (colMap["media"] !== undefined && driveImageUrl) {
+          sheet.getRange(existingRowIndex, colMap["media"] + 1).setValue(driveImageUrl);
+        }
+      } else {
+        // Thêm dòng mới
+        var nextRow = sheet.getLastRow() + 1;
+        var priorityText = item.isUrgent ? "KHẨN CẤP (SOS)" : "Bình thường";
+        var targetLength = Math.max(existingHeaders.length, 14);
+        var rowData = new Array(targetLength).fill("");
 
-      if (colMap["name"] !== undefined) rowData[colMap["name"]] = item.studentName || "Ẩn danh";
-      else rowData[2] = item.studentName || "Ẩn danh";
+        if (colMap["stt"] !== undefined) rowData[colMap["stt"]] = nextRow - 1;
+        else rowData[0] = nextRow - 1;
 
-      if (colMap["class"] !== undefined) rowData[colMap["class"]] = item.studentClass || "Chưa cung cấp";
-      else rowData[3] = item.studentClass || "Chưa cung cấp";
+        if (colMap["code"] !== undefined) rowData[colMap["code"]] = secretCode;
+        else rowData[1] = secretCode;
 
-      if (colMap["emotion"] !== undefined) rowData[colMap["emotion"]] = item.emotion || "";
-      else rowData[4] = item.emotion || "";
+        if (colMap["name"] !== undefined) rowData[colMap["name"]] = item.studentName || "Ẩn danh";
+        else rowData[2] = item.studentName || "Ẩn danh";
 
-      if (colMap["category"] !== undefined) rowData[colMap["category"]] = item.category || "Chia sẻ";
-      else rowData[5] = item.category || "Chia sẻ";
+        if (colMap["class"] !== undefined) rowData[colMap["class"]] = item.studentClass || "Chưa cung cấp";
+        else rowData[3] = item.studentClass || "Chưa cung cấp";
 
-      if (colMap["title"] !== undefined) rowData[colMap["title"]] = item.title || "";
-      else rowData[6] = item.title || "";
+        if (colMap["emotion"] !== undefined) rowData[colMap["emotion"]] = item.emotion || "";
+        else rowData[4] = item.emotion || "";
 
-      if (colMap["content"] !== undefined) rowData[colMap["content"]] = item.content || "";
-      else rowData[7] = item.content || "";
+        if (colMap["category"] !== undefined) rowData[colMap["category"]] = item.category || "Chia sẻ";
+        else rowData[5] = item.category || "Chia sẻ";
 
-      if (colMap["audio"] !== undefined) rowData[colMap["audio"]] = driveAudioUrl;
-      if (colMap["media"] !== undefined) rowData[colMap["media"]] = driveImageUrl;
-      if (colMap["priority"] !== undefined) rowData[colMap["priority"]] = priorityText;
-      if (colMap["status"] !== undefined) rowData[colMap["status"]] = item.status || "Mới tiếp nhận";
-      if (colMap["note"] !== undefined) rowData[colMap["note"]] = item.teacherNote || "";
-      if (colMap["time"] !== undefined) rowData[colMap["time"]] = item.timestamp || Utilities.formatDate(new Date(), "GMT+7", "yyyy-MM-dd HH:mm");
+        if (colMap["title"] !== undefined) rowData[colMap["title"]] = item.title || "";
+        else rowData[6] = item.title || "";
 
-      sheet.appendRow(rowData);
+        if (colMap["content"] !== undefined) rowData[colMap["content"]] = item.content || "";
+        else rowData[7] = item.content || "";
 
-      if (item.isUrgent) {
-        sheet.getRange(nextRow, 1, 1, rowData.length)
-          .setBackground("#FEE2E2")
-          .setFontColor("#991B1B");
+        if (colMap["audio"] !== undefined) rowData[colMap["audio"]] = driveAudioUrl;
+        if (colMap["media"] !== undefined) rowData[colMap["media"]] = driveImageUrl;
+        if (colMap["priority"] !== undefined) rowData[colMap["priority"]] = priorityText;
+        if (colMap["status"] !== undefined) rowData[colMap["status"]] = item.status || "Mới tiếp nhận";
+        if (colMap["note"] !== undefined) rowData[colMap["note"]] = currentNote;
+        if (colMap["time"] !== undefined) rowData[colMap["time"]] = item.timestamp || Utilities.formatDate(new Date(), "GMT+7", "yyyy-MM-dd HH:mm");
+
+        sheet.appendRow(rowData);
+
+        if (item.isUrgent) {
+          sheet.getRange(nextRow, 1, 1, rowData.length)
+            .setBackground("#FEE2E2")
+            .setFontColor("#991B1B");
+        }
       }
 
       processedCount++;
