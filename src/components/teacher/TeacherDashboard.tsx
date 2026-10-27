@@ -24,6 +24,7 @@ import {
   getPlayableAudioUrl 
 } from '../../utils/googleDriveHelpers';
 import { convertBlobToDataUrl } from '../../utils/syncGoogleAppsScript';
+import { AudioPlayerCard } from '../AudioPlayerCard';
 
 interface TeacherDashboardProps {
   submissions: StudentSubmission[];
@@ -997,53 +998,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
               {/* Nếu có ghi âm ban đầu */}
               {selectedSubmission.audioUrl && (
-                <div className="p-3 bg-white rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-2 mb-2">
-                  <div className="flex items-center gap-2 text-xs font-bold text-sky-700">
-                    <Volume2 size={16} />
-                    <span>File ghi âm giọng nói ({selectedSubmission.audioDuration || 0}s)</span>
-                    {isGoogleDriveUrl(selectedSubmission.audioUrl) && (
-                      <span className="px-2 py-0.5 rounded-md bg-sky-100 text-[10px] text-sky-800 font-semibold">
-                        Google Drive
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleToggleAudio(selectedSubmission.id, selectedSubmission.audioUrl!)}
-                      className="px-3 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
-                    >
-                      {playingAudioId === selectedSubmission.id ? <Pause size={14} /> : <Play size={14} />}
-                      <span>{playingAudioId === selectedSubmission.id ? 'Tạm dừng' : 'Nghe ghi âm'}</span>
-                    </button>
-                    {isGoogleDriveUrl(selectedSubmission.audioUrl) && (
-                      <a
-                        href={getDrivePreviewUrl(selectedSubmission.audioUrl)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs flex items-center gap-1"
-                        title="Mở file ghi âm trên Google Drive"
-                      >
-                        <ExternalLink size={12} />
-                        <span>Mở Drive</span>
-                      </a>
-                    )}
-                  </div>
-                  {playingAudioId === selectedSubmission.id && (
-                    <div className="w-full mt-2 pt-2 border-t border-sky-100 flex items-center justify-between gap-3 bg-sky-50 px-3 py-2 rounded-xl animate-in fade-in">
-                      <div className="flex items-center gap-2 text-xs font-bold text-sky-800">
-                        <Volume2 size={16} className="text-sky-600 animate-pulse" />
-                        <span>Đang phát: {audioPlayTime.current}s / {audioPlayTime.total || selectedSubmission.audioDuration || 0}s</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleToggleAudio(selectedSubmission.id, selectedSubmission.audioUrl!)}
-                        className="px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-bold cursor-pointer"
-                      >
-                        Tạm dừng
-                      </button>
-                    </div>
-                  )}
+                <div className="mb-3">
+                  <AudioPlayerCard
+                    url={selectedSubmission.audioUrl}
+                    title={`Đoạn ghi âm giọng nói của bé: ${selectedSubmission.studentName}`}
+                    duration={selectedSubmission.audioDuration}
+                    theme="sky"
+                    senderRole="student"
+                  />
                 </div>
               )}
 
@@ -1379,52 +1341,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         <p className="text-slate-800 leading-relaxed font-medium pl-8">{fb.comment}</p>
 
                         {fb.audioUrl && (
-                          <div className="pl-8 pt-1 flex flex-wrap items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => handleToggleAudio('fb-' + fb.id, fb.audioUrl!)}
-                              className={`px-3 py-1.5 rounded-xl text-white font-bold text-[11px] flex items-center gap-1.5 cursor-pointer shadow-xs ${
-                                isStudent
-                                  ? 'bg-sky-600 hover:bg-sky-700'
-                                  : 'bg-amber-500 hover:bg-amber-600'
-                              }`}
-                            >
-                              {playingAudioId === 'fb-' + fb.id ? <Pause size={13} /> : <Play size={13} />}
-                              <span>
-                                {playingAudioId === 'fb-' + fb.id
-                                  ? 'Tạm dừng'
-                                  : isStudent
-                                  ? `Nghe giọng bé nhắn (${fb.audioDuration || 0}s)`
-                                  : `Nghe lời dặn dò (${fb.audioDuration || 0}s)`}
-                              </span>
-                            </button>
-                            {isGoogleDriveUrl(fb.audioUrl) && (
-                              <a
-                                href={getDrivePreviewUrl(fb.audioUrl)}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] flex items-center gap-1"
-                                title="Mở file trên Google Drive"
-                              >
-                                <ExternalLink size={12} />
-                                <span>Drive</span>
-                              </a>
-                            )}
-                            {playingAudioId === 'fb-' + fb.id && (
-                              <div className="w-full pt-1.5 flex items-center justify-between gap-3 bg-amber-50 px-3 py-2 rounded-xl border border-amber-200 animate-in fade-in">
-                                <div className="flex items-center gap-2 text-xs font-bold text-amber-800">
-                                  <Volume2 size={16} className="text-amber-600 animate-pulse" />
-                                  <span>Đang phát: {audioPlayTime.current}s / {audioPlayTime.total || fb.audioDuration || 0}s</span>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleAudio('fb-' + fb.id, fb.audioUrl!)}
-                                  className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold cursor-pointer"
-                                >
-                                  Tạm dừng
-                                </button>
-                              </div>
-                            )}
+                          <div className="pl-8 pt-2">
+                            <AudioPlayerCard
+                              url={fb.audioUrl}
+                              title={isStudent ? 'Ghi âm của học sinh' : 'Lời dặn dò ghi âm của Thầy Cô'}
+                              duration={fb.audioDuration}
+                              theme={isStudent ? 'sky' : 'amber'}
+                              senderRole={isStudent ? 'student' : 'teacher'}
+                            />
                           </div>
                         )}
 

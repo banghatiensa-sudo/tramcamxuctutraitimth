@@ -45,6 +45,106 @@ export const GoogleSheetSyncModal: React.FC<GoogleSheetSyncModalProps> = ({
  *    cho giao diện Admin trên web hiển thị đầy đủ dữ liệu thực tế.
  */
 
+// HÀM PHÂN TÍCH PHẢN HỒI VÀ GHI ÂM TỪ GHI CHÚ
+function parseAppsScriptFeedbacks(note, defaultStudentName, replyAudioUrl) {
+  var feedbacks = [];
+  if (!note || !note.trim()) return feedbacks;
+  var parts = note.split(/\\s*\\|\\s*/);
+  for (var i = 0; i < parts.length; i++) {
+    var part = parts[i].trim();
+    if (!part) continue;
+    var uMatch = part.match(/(https?:\\/\\/[^\\s\\]\\)]+|data:audio\\/[^\\s\\]\\)]+)/);
+    var pUrl = uMatch ? uMatch[0].replace(/[\\]\\)\\,\\.]+$/, "") : "";
+    var pLower = part.toLowerCase();
+
+    if (pLower.indexOf("[bé nhắn lại") === 0 || pLower.indexOf("[học sinh nhắn lại") === 0 || pLower.indexOf("[bé:") === 0) {
+      var text = part.replace(/^\\[(Bé nhắn lại|Học sinh nhắn lại|Bé)\\]:\\s*/i, "").trim();
+      feedbacks.push({
+        id: "fb-as-" + i + "-" + text.slice(0, 10),
+        senderRole: "student",
+        senderName: defaultStudentName || "Học sinh",
+        teacherName: defaultStudentName || "Học sinh",
+        comment: text,
+        timestamp: "Trước đó",
+        audioUrl: pUrl || undefined
+      });
+    } else if (pLower.indexOf("[bé gửi ghi âm") === 0 || pLower.indexOf("[học sinh gửi ghi âm") === 0) {
+      var lastS = null;
+      for (var s = feedbacks.length - 1; s >= 0; s--) {
+        if (feedbacks[s].senderRole === "student" && !feedbacks[s].audioUrl) { lastS = feedbacks[s]; break; }
+      }
+      if (lastS && pUrl) {
+        lastS.audioUrl = pUrl;
+      } else {
+        feedbacks.push({
+          id: "fb-as-s-audio-" + i,
+          senderRole: "student",
+          senderName: defaultStudentName || "Học sinh",
+          teacherName: defaultStudentName || "Học sinh",
+          comment: "Bé đã gửi một đoạn ghi âm giọng nói nhắn lại Thầy Cô.",
+          timestamp: "Trước đó",
+          audioUrl: pUrl || replyAudioUrl || undefined
+        });
+      }
+    } else if (pLower.indexOf("[thầy cô gửi ghi âm") === 0 || pLower.indexOf("[cô gửi ghi âm") === 0 || pLower.indexOf("[thầy gửi ghi âm") === 0) {
+      var lastT = null;
+      for (var t = feedbacks.length - 1; t >= 0; t--) {
+        if (feedbacks[t].senderRole === "teacher" && !feedbacks[t].audioUrl) { lastT = feedbacks[t]; break; }
+      }
+      if (lastT && pUrl) {
+        lastT.audioUrl = pUrl;
+      } else {
+        feedbacks.push({
+          id: "fb-as-t-audio-" + i,
+          senderRole: "teacher",
+          senderName: "Thầy Cô Tư Vấn",
+          teacherName: "Thầy Cô Tư Vấn",
+          comment: "Thầy Cô gửi lời nhắn nhủ, yêu thương bằng giọng nói cho con.",
+          timestamp: "Trước đó",
+          audioUrl: pUrl || undefined
+        });
+      }
+    } else if (pLower.indexOf("[cô ") === 0 || pLower.indexOf("[thầy ") === 0 || pLower.indexOf("[thầy cô") === 0 || pLower.indexOf("[admin") === 0) {
+      var match = part.match(/^\\[([^\\]]+)\\]:\\s*(.*)$/i);
+      var teacherName = match ? match[1] : "Thầy Cô Tư Vấn";
+      var comment = match ? match[2] : part;
+      feedbacks.push({
+        id: "fb-as-t-" + i,
+        senderRole: "teacher",
+        senderName: teacherName,
+        teacherName: teacherName,
+        comment: comment,
+        timestamp: "Trước đó",
+        audioUrl: pUrl || undefined
+      });
+    } else {
+      feedbacks.push({
+        id: "fb-as-gen-" + i,
+        senderRole: "teacher",
+        senderName: "Thầy Cô Tư Vấn",
+        teacherName: "Thầy Cô Tư Vấn",
+        comment: part,
+        timestamp: "Trước đó",
+        audioUrl: pUrl || undefined
+      });
+    }
+  }
+
+  var tMatch = note.match(/(?:[Thầy Cô gửi ghi âm|Cô gửi ghi âm|Thầy gửi ghi âm][^\\]]*\\]:?|\\[(?:Thầy Cô gửi ghi âm|Cô gửi ghi âm|Thầy gửi ghi âm):)\\s*([^\\s\\]\\)]+)/i) ||
+               note.match(/(https?:\\/\\/[^\\s]+drive\\.google\\.com\\/file\\/d\\/[^\\s\\]\\)]+)/i);
+  if (tMatch && tMatch[1]) {
+    var rawUrl = tMatch[1].replace(/[\\]\\)\\,\\.]+$/, "");
+    for (var k = 0; k < feedbacks.length; k++) {
+      if (feedbacks[k].senderRole === "teacher" && !feedbacks[k].audioUrl) {
+        feedbacks[k].audioUrl = rawUrl;
+        break;
+      }
+    }
+  }
+
+  return feedbacks;
+}
+
 // 1. HÀM ĐỌC DỮ LIỆU TỪ GOOGLE SHEET TRẢ VỀ CHO GIAO DIỆN ADMIN WEB
 function doGet(e) {
   var lock = LockService.getScriptLock();
@@ -148,7 +248,7 @@ function doGet(e) {
         status: statusText.toString(),
         teacherNote: note.toString(),
         timestamp: timeText.toString(),
-        feedbacks: []
+        feedbacks: parseAppsScriptFeedbacks(note.toString(), studentName.toString(), replyAudioUrl)
       });
     }
 

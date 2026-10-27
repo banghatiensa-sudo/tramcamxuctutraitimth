@@ -20,8 +20,10 @@ export function parseFeedbacksFromNote(
       const durationMatch = part.match(/\((\d+)\s*s\)/i);
       const duration = durationMatch ? parseInt(durationMatch[1], 10) : undefined;
 
-      if (part.startsWith('[Bé nhắn lại]:') || part.startsWith('[Học sinh nhắn lại]:') || part.startsWith('[Bé:')) {
-        const text = part.replace(/^\[(Bé nhắn lại|Học sinh nhắn lại|Bé)\]:\s*/, '').trim();
+      const partLower = part.toLowerCase();
+
+      if (partLower.startsWith('[bé nhắn lại]:') || partLower.startsWith('[học sinh nhắn lại]:') || partLower.startsWith('[bé:')) {
+        const text = part.replace(/^\[(Bé nhắn lại|Học sinh nhắn lại|Bé)\]:\s*/i, '').trim();
         feedbacks.push({
           id: `fb-note-student-${idx}-${text.slice(0, 10)}`,
           senderRole: 'student',
@@ -32,19 +34,55 @@ export function parseFeedbacksFromNote(
           audioUrl: audioUrlFromPart || (idx === parts.length - 1 ? studentReplyAudioUrl : undefined),
           audioDuration: duration,
         });
-      } else if (part.startsWith('[Bé gửi ghi âm') || part.startsWith('[Học sinh gửi ghi âm')) {
-        feedbacks.push({
-          id: `fb-note-student-audio-${idx}`,
-          senderRole: 'student',
-          senderName: defaultStudentName || 'Học sinh',
-          teacherName: defaultStudentName || 'Học sinh',
-          comment: 'Bé đã gửi một đoạn ghi âm giọng nói nhắn lại Thầy Cô.',
-          timestamp: 'Trước đó',
-          audioUrl: audioUrlFromPart || studentReplyAudioUrl,
-          audioDuration: duration,
-        });
-      } else if (part.startsWith('[Cô ') || part.startsWith('[Thầy ') || part.startsWith('[Thầy Cô') || part.startsWith('[Admin')) {
-        const match = part.match(/^\[([^\]]+)\]:\s*(.*)$/);
+      } else if (partLower.startsWith('[bé gửi ghi âm') || partLower.startsWith('[học sinh gửi ghi âm')) {
+        const lastStudentFb = [...feedbacks].reverse().find((f) => f.senderRole === 'student' && !f.audioUrl);
+        if (lastStudentFb && audioUrlFromPart) {
+          lastStudentFb.audioUrl = audioUrlFromPart;
+          if (duration) lastStudentFb.audioDuration = duration;
+        } else if (audioUrlFromPart || !lastStudentFb) {
+          feedbacks.push({
+            id: `fb-note-student-audio-${idx}`,
+            senderRole: 'student',
+            senderName: defaultStudentName || 'Học sinh',
+            teacherName: defaultStudentName || 'Học sinh',
+            comment: 'Bé đã gửi một đoạn ghi âm giọng nói nhắn lại Thầy Cô.',
+            timestamp: 'Trước đó',
+            audioUrl: audioUrlFromPart || studentReplyAudioUrl,
+            audioDuration: duration,
+          });
+        }
+      } else if (
+        partLower.startsWith('[thầy cô gửi ghi âm') ||
+        partLower.startsWith('[thầy cô dặn dò') ||
+        partLower.startsWith('[cô gửi ghi âm') ||
+        partLower.startsWith('[thầy gửi ghi âm') ||
+        partLower.startsWith('[ghi âm thầy cô') ||
+        partLower.startsWith('[ghi âm cô')
+      ) {
+        const lastTeacherFb = [...feedbacks].reverse().find((f) => f.senderRole === 'teacher' && !f.audioUrl);
+        if (lastTeacherFb && audioUrlFromPart) {
+          lastTeacherFb.audioUrl = audioUrlFromPart;
+          if (duration) lastTeacherFb.audioDuration = duration;
+        } else {
+          feedbacks.push({
+            id: `fb-note-teacher-audio-${idx}`,
+            senderRole: 'teacher',
+            senderName: 'Thầy Cô Tư Vấn',
+            teacherName: 'Thầy Cô Tư Vấn',
+            comment: 'Thầy Cô gửi lời nhắn nhủ, yêu thương bằng giọng nói cho con.',
+            timestamp: 'Trước đó',
+            audioUrl: audioUrlFromPart,
+            audioDuration: duration,
+          });
+        }
+      } else if (
+        partLower.startsWith('[cô ') ||
+        partLower.startsWith('[thầy ') ||
+        partLower.startsWith('[thầy cô') ||
+        partLower.startsWith('[admin') ||
+        partLower.startsWith('[giáo viên')
+      ) {
+        const match = part.match(/^\[([^\]]+)\]:\s*(.*)$/i);
         const teacher = match ? match[1] : 'Thầy Cô Tư Vấn';
         const text = match ? match[2] : part;
         feedbacks.push({
@@ -53,22 +91,6 @@ export function parseFeedbacksFromNote(
           senderName: teacher,
           teacherName: teacher,
           comment: text,
-          timestamp: 'Trước đó',
-          audioUrl: audioUrlFromPart,
-          audioDuration: duration,
-        });
-      } else if (
-        part.startsWith('[Thầy Cô gửi ghi âm') ||
-        part.startsWith('[Thầy Cô dặn dò') ||
-        part.startsWith('[Cô gửi ghi âm') ||
-        part.startsWith('[Thầy gửi ghi âm')
-      ) {
-        feedbacks.push({
-          id: `fb-note-teacher-audio-${idx}`,
-          senderRole: 'teacher',
-          senderName: 'Thầy Cô Tư Vấn',
-          teacherName: 'Thầy Cô Tư Vấn',
-          comment: 'Thầy Cô gửi lời nhắn nhủ, yêu thương bằng giọng nói cho con.',
           timestamp: 'Trước đó',
           audioUrl: audioUrlFromPart,
           audioDuration: duration,
@@ -86,6 +108,16 @@ export function parseFeedbacksFromNote(
         });
       }
     });
+
+    // Quét bổ sung: Nếu trong toàn bộ note có link ghi âm Thầy Cô mà chưa gắn vào tin nhắn giáo viên
+    const teacherAudioMatch = note.match(/\[(?:Thầy Cô gửi ghi âm|Cô gửi ghi âm|Thầy gửi ghi âm)[^\]]*\]:\s*(https?:\/\/[^\s\]\)]+|data:audio\/[^\s\]\)]+)/i);
+    if (teacherAudioMatch && teacherAudioMatch[1]) {
+      const rawTeacherUrl = teacherAudioMatch[1].replace(/[\]\)\,\.]+$/, '');
+      const teacherFb = feedbacks.find((f) => f.senderRole === 'teacher' && !f.audioUrl);
+      if (teacherFb) {
+        teacherFb.audioUrl = rawTeacherUrl;
+      }
+    }
   }
 
   // Nếu có studentReplyAudioUrl mà chưa có tin nhắn học sinh nào gắn link âm thanh này
