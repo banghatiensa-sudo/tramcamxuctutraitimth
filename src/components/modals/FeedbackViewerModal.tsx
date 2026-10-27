@@ -113,6 +113,7 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
   // Audio Playback cho bài chia sẻ gốc của chính học sinh
   const [playingStudentSubmissionAudio, setPlayingStudentSubmissionAudio] = useState(false);
   const studentSubAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [audioPlayTime, setAudioPlayTime] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
 
   // Hook ghi âm cho học sinh (đặc biệt lớp 1, 2)
   const studentRecorder = useAudioRecorder();
@@ -229,19 +230,23 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
   const stopAllAudio = () => {
     if (activeAudioRef.current) {
       activeAudioRef.current.pause();
+      activeAudioRef.current.src = '';
       activeAudioRef.current = null;
     }
     setActiveAudioPlaying(null);
     if (recordedAudioElemRef.current) {
       recordedAudioElemRef.current.pause();
+      recordedAudioElemRef.current.src = '';
       recordedAudioElemRef.current = null;
     }
     setIsPlayingRecordedReply(false);
     if (studentSubAudioRef.current) {
       studentSubAudioRef.current.pause();
+      studentSubAudioRef.current.src = '';
       studentSubAudioRef.current = null;
     }
     setPlayingStudentSubmissionAudio(false);
+    setAudioPlayTime({ current: 0, total: 0 });
   };
 
   // Học sinh nghe lại đoạn ghi âm trong bài chia sẻ của chính mình
@@ -251,15 +256,28 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
         studentSubAudioRef.current.pause();
       }
       setPlayingStudentSubmissionAudio(false);
+      setAudioPlayTime({ current: 0, total: 0 });
     } else {
       stopAllAudio();
       const streamUrl = getPlayableAudioUrl(url);
       const audio = new Audio(streamUrl);
+      audio.volume = 1.0;
       audio.preload = 'auto';
+      audio.ontimeupdate = () => {
+        setAudioPlayTime({
+          current: Math.round(audio.currentTime),
+          total: Math.round(audio.duration || 0),
+        });
+      };
       studentSubAudioRef.current = audio;
-      audio.onended = () => setPlayingStudentSubmissionAudio(false);
+      audio.onended = () => {
+        setPlayingStudentSubmissionAudio(false);
+        setAudioPlayTime({ current: 0, total: 0 });
+      };
       audio.onerror = (e) => {
         console.warn('Lỗi audio học sinh:', e);
+        setPlayingStudentSubmissionAudio(false);
+        setAudioPlayTime({ current: 0, total: 0 });
       };
       audio.play().catch((err) => {
         console.warn('Play audio catch:', err);
@@ -275,15 +293,28 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
         activeAudioRef.current.pause();
       }
       setActiveAudioPlaying(null);
+      setAudioPlayTime({ current: 0, total: 0 });
     } else {
       stopAllAudio();
       const streamUrl = getPlayableAudioUrl(url);
       const audio = new Audio(streamUrl);
+      audio.volume = 1.0;
       audio.preload = 'auto';
+      audio.ontimeupdate = () => {
+        setAudioPlayTime({
+          current: Math.round(audio.currentTime),
+          total: Math.round(audio.duration || 0),
+        });
+      };
       activeAudioRef.current = audio;
-      audio.onended = () => setActiveAudioPlaying(null);
+      audio.onended = () => {
+        setActiveAudioPlaying(null);
+        setAudioPlayTime({ current: 0, total: 0 });
+      };
       audio.onerror = (e) => {
         console.warn('Lỗi audio trao đổi:', e);
+        setActiveAudioPlaying(null);
+        setAudioPlayTime({ current: 0, total: 0 });
       };
       audio.play().catch((err) => {
         console.warn('Play audio trao đổi catch:', err);
@@ -302,6 +333,7 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
     } else {
       stopAllAudio();
       const audio = new Audio(studentRecorder.audioUrl);
+      audio.volume = 1.0;
       audio.onended = () => setIsPlayingRecordedReply(false);
       audio.onerror = () => setIsPlayingRecordedReply(false);
       audio.play().catch(() => {});
@@ -369,7 +401,7 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
   const handleSendReply = async (e: React.FormEvent) => {
     e.preventDefault();
     const hasText = replyInput.trim().length > 0;
-    const hasAudio = !!(studentRecorder.base64Audio || studentRecorder.audioUrl);
+    const hasAudio = !!(studentRecorder.base64Audio || studentRecorder.audioUrl || studentRecorder.isRecording);
 
     if ((!hasText && !hasAudio) || !foundSubmission || !onSendStudentReply) return;
 
@@ -672,14 +704,18 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
                       )}
                     </div>
                     {playingStudentSubmissionAudio && (
-                      <div className="w-full mt-2 pt-2 border-t border-sky-200 animate-in fade-in">
-                        <audio
-                          src={getPlayableAudioUrl(foundSubmission.audioUrl!)}
-                          controls
-                          autoPlay
-                          playsInline
-                          className="w-full h-8 rounded-lg"
-                        />
+                      <div className="w-full mt-2 pt-2 border-t border-sky-200 flex items-center justify-between gap-3 bg-sky-50 px-3 py-2 rounded-xl animate-in fade-in">
+                        <div className="flex items-center gap-2 text-xs font-bold text-sky-800">
+                          <Volume2 size={16} className="text-sky-600 animate-pulse" />
+                          <span>Đang phát: {audioPlayTime.current}s / {audioPlayTime.total || foundSubmission.audioDuration || 0}s</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleTogglePlayStudentSubmissionAudio(foundSubmission.audioUrl!)}
+                          className="px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-bold cursor-pointer"
+                        >
+                          Tạm dừng
+                        </button>
                       </div>
                     )}
                   </div>
@@ -859,14 +895,18 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
                               )}
                             </div>
                             {activeAudioPlaying === fb.id && (
-                              <div className="w-full pt-2 border-t border-amber-200/60 animate-in fade-in">
-                                <audio
-                                  src={getPlayableAudioUrl(fb.audioUrl)}
-                                  controls
-                                  autoPlay
-                                  playsInline
-                                  className="w-full h-8 rounded-lg max-w-sm"
-                                />
+                              <div className="w-full pt-2 flex items-center justify-between gap-3 bg-amber-50/80 px-3 py-2 rounded-xl border border-amber-200 animate-in fade-in">
+                                <div className="flex items-center gap-2 text-xs font-bold text-amber-800">
+                                  <Volume2 size={16} className="text-amber-600 animate-pulse" />
+                                  <span>Đang phát: {audioPlayTime.current}s / {audioPlayTime.total || fb.audioDuration || 0}s</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleTogglePlayTeacherAudio(fb.id, fb.audioUrl!)}
+                                  className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold cursor-pointer"
+                                >
+                                  Tạm dừng
+                                </button>
                               </div>
                             )}
                           </div>
@@ -973,7 +1013,7 @@ export const FeedbackViewerModal: React.FC<FeedbackViewerModalProps> = ({
                 />
                 <button
                   type="submit"
-                  disabled={!replyInput.trim() && !studentRecorder.audioUrl}
+                  disabled={!replyInput.trim() && !studentRecorder.audioUrl && !studentRecorder.isRecording}
                   className="px-5 py-2.5 bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-600 hover:to-rose-600 disabled:opacity-40 text-white font-extrabold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
                 >
                   <Send size={14} />

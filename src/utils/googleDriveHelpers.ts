@@ -43,7 +43,7 @@ export function getDriveDirectStreamUrl(url?: string): string {
 
 export function getPlayableAudioUrl(url?: string): string {
   if (!url) return '';
-  if (url.startsWith('data:audio/') || url.startsWith('blob:')) {
+  if (url.startsWith('data:audio/') || url.startsWith('blob:') || url.startsWith('/api/audio-proxy')) {
     return url;
   }
   if (isGoogleDriveUrl(url)) {
@@ -51,6 +51,9 @@ export function getPlayableAudioUrl(url?: string): string {
     if (fileId) {
       return `/api/audio-proxy?id=${fileId}`;
     }
+  }
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    return `/api/audio-proxy?url=${encodeURIComponent(url)}`;
   }
   return url;
 }

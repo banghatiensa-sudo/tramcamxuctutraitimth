@@ -2,6 +2,7 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
 import { createServer as createViteServer } from 'vite';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -284,10 +285,77 @@ app.put('/api/submissions/:id', (req, res) => {
   }
 });
 
-// Cache âm thanh trong bộ nhớ RAM để phát lại tức thì 0ms không tốn băng thông
+// Hàm transcode âm thanh WebM/Opus/Ogg sang MP3 chuẩn phổ quát tương thích 100% mọi trình duyệt (Safari/iOS/Chrome/Android)
+function transcodeToMp3(inputBuffer: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn('ffmpeg', [
+      '-i', 'pipe:0',
+      '-vn',
+      '-ar', '44100',
+      '-ac', '2',
+      '-b:a', '128k',
+      '-f', 'mp3',
+      'pipe:1'
+    ]);
+    const chunks: Buffer[] = [];
+    ffmpeg.stdout.on('data', (c) => chunks.push(c));
+    ffmpeg.stderr.on('data', () => {});
+    ffmpeg.on('close', (code) => {
+      if (code === 0 && chunks.length > 0) {
+        resolve(Buffer.concat(chunks));
+      } else {
+        reject(new Error('FFmpeg failed with code ' + code));
+      }
+    });
+    ffmpeg.on('error', reject);
+    ffmpeg.stdin.write(inputBuffer);
+    ffmpeg.stdin.end();
+  });
+}
+
+// Hàm gửi binary audio hỗ trợ HTTP 206 Partial Content (Range Request) bắt buộc trên Safari và Chrome
+function sendAudioBufferWithRange(
+  req: express.Request,
+  res: express.Response,
+  buffer: Buffer,
+  contentType: string = 'audio/mpeg'
+) {
+  const total = buffer.length;
+  const range = req.headers.range;
+
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'Range');
+
+  if (range) {
+    const parts = range.replace(/bytes=/, '').split('-');
+    const start = parseInt(parts[0], 10);
+    const end = parts[1] ? parseInt(parts[1], 10) : total - 1;
+
+    if (isNaN(start) || start >= total || end >= total || start > end) {
+      res.setHeader('Content-Range', `bytes */${total}`);
+      return res.status(416).send('Requested range not satisfiable');
+    }
+
+    const chunk = buffer.subarray(start, end + 1);
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+    res.setHeader('Content-Length', chunk.length);
+    res.setHeader('Content-Type', contentType);
+    return res.end(chunk);
+  }
+
+  res.status(200);
+  res.setHeader('Content-Length', total);
+  res.setHeader('Content-Type', contentType);
+  return res.end(buffer);
+}
+
+// Cache âm thanh MP3 đã transcode trong bộ nhớ RAM để phát lại tức thì 0ms
 const audioProxyCache = new Map<string, { buffer: Buffer; contentType: string }>();
 
-// API: Proxy phát âm thanh Google Drive trực tiếp cho trình duyệt, bỏ qua 100% rào cản CORS & Cookies
+// API: Proxy phát âm thanh Google Drive trực tiếp cho trình duyệt, tự động transcode MP3 và hỗ trợ HTTP 206
 app.get('/api/audio-proxy', async (req, res) => {
   try {
     const rawUrl = (req.query.url as string) || '';
@@ -300,70 +368,101 @@ app.get('/api/audio-proxy', async (req, res) => {
       if (!fileId && matchIdParam && matchIdParam[1]) fileId = matchIdParam[1];
     }
 
-    if (!fileId) {
-      return res.status(400).send('Thiếu mã file Google Drive');
+    if (!fileId && !rawUrl) {
+      return res.status(400).send('Thiếu mã file Google Drive hoặc đường link âm thanh');
     }
 
-    // 1. Nếu đã có trong cache bộ nhớ: Trả về tức thì 0ms
-    if (audioProxyCache.has(fileId)) {
-      const cached = audioProxyCache.get(fileId)!;
-      res.setHeader('Content-Type', cached.contentType || 'audio/webm');
-      res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Content-Length', cached.buffer.length);
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      return res.send(cached.buffer);
+    const cacheKey = fileId || rawUrl;
+
+    // 1. Nếu đã có trong cache bộ nhớ RAM: Trả về tức thì kèm hỗ trợ HTTP 206 Range
+    if (audioProxyCache.has(cacheKey)) {
+      const cached = audioProxyCache.get(cacheKey)!;
+      return sendAudioBufferWithRange(req, res, cached.buffer, cached.contentType);
     }
 
-    // 2. Tải binary stream trực tiếp từ máy chủ Google Drive
-    const candidateUrls = [
-      `https://drive.usercontent.google.com/download?id=${fileId}&export=download&authuser=0`,
-      `https://drive.google.com/uc?export=download&id=${fileId}`,
-      `https://docs.google.com/uc?export=download&id=${fileId}`,
-    ];
-
+    // 2. Tải binary stream trực tiếp từ Google Drive hoặc URL nguồn
     let audioBuffer: Buffer | null = null;
-    let finalContentType = 'audio/webm';
+    let originalContentType = 'audio/webm';
 
-    for (const testUrl of candidateUrls) {
+    if (fileId) {
+      const candidateUrls = [
+        `https://drive.usercontent.google.com/download?id=${fileId}&export=download&authuser=0`,
+        `https://drive.google.com/uc?export=download&id=${fileId}`,
+        `https://docs.google.com/uc?export=download&id=${fileId}`,
+      ];
+
+      for (const testUrl of candidateUrls) {
+        try {
+          const driveRes = await fetch(testUrl, {
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              Accept: '*/*',
+            },
+            redirect: 'follow',
+          });
+
+          if (driveRes.ok) {
+            const cType = driveRes.headers.get('content-type') || '';
+            if (!cType.includes('text/html')) {
+              const buf = await driveRes.arrayBuffer();
+              if (buf.byteLength > 100) {
+                audioBuffer = Buffer.from(buf);
+                originalContentType = cType.startsWith('audio/') ? cType : 'audio/webm';
+                break;
+              }
+            }
+          }
+        } catch {
+          // Thử đường dẫn tiếp theo
+        }
+      }
+    } else if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
       try {
-        const driveRes = await fetch(testUrl, {
-          headers: {
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            Accept: '*/*',
-          },
+        const directRes = await fetch(rawUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0' },
           redirect: 'follow',
         });
-
-        if (driveRes.ok) {
-          const cType = driveRes.headers.get('content-type') || '';
-          if (!cType.includes('text/html')) {
-            const buf = await driveRes.arrayBuffer();
-            if (buf.byteLength > 100) {
-              audioBuffer = Buffer.from(buf);
-              finalContentType = cType.startsWith('audio/') ? cType : 'audio/webm';
-              break;
-            }
+        if (directRes.ok) {
+          const cType = directRes.headers.get('content-type') || '';
+          const buf = await directRes.arrayBuffer();
+          if (buf.byteLength > 100) {
+            audioBuffer = Buffer.from(buf);
+            originalContentType = cType.startsWith('audio/') ? cType : 'audio/webm';
           }
         }
       } catch (err) {
-        // Thử đường dẫn tiếp theo
+        console.warn('Lỗi fetch direct audio URL:', err);
       }
     }
 
     if (audioBuffer) {
-      audioProxyCache.set(fileId, { buffer: audioBuffer, contentType: finalContentType });
-      res.setHeader('Content-Type', finalContentType);
-      res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Content-Length', audioBuffer.length);
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      return res.send(audioBuffer);
+      // 3. Tự động chuyển đổi sang MP3 chuẩn quốc tế để mọi trình duyệt đều phát được ngay
+      let finalBuffer = audioBuffer;
+      let finalContentType = originalContentType;
+
+      try {
+        const mp3Buf = await transcodeToMp3(audioBuffer);
+        if (mp3Buf && mp3Buf.length > 500) {
+          finalBuffer = mp3Buf;
+          finalContentType = 'audio/mpeg';
+        }
+      } catch (transcodeErr) {
+        console.warn('Không thể transcode sang mp3, giữ nguyên buffer gốc:', transcodeErr);
+        if (finalContentType === 'application/octet-stream') {
+          finalContentType = 'audio/webm';
+        }
+      }
+
+      audioProxyCache.set(cacheKey, { buffer: finalBuffer, contentType: finalContentType });
+      return sendAudioBufferWithRange(req, res, finalBuffer, finalContentType);
     }
 
-    // Fallback: Chuyển hướng sang Google Drive Preview
-    return res.redirect(`https://drive.google.com/uc?export=download&id=${fileId}`);
+    // Fallback: Chuyển hướng nếu không tải được stream
+    if (fileId) {
+      return res.redirect(`https://drive.google.com/uc?export=download&id=${fileId}`);
+    }
+    return res.status(404).send('Không thể tìm thấy file âm thanh');
   } catch (err: any) {
     console.error('Lỗi stream audio-proxy:', err);
     return res.status(500).send('Lỗi khi tải luồng âm thanh');

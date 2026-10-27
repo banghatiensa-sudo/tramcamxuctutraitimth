@@ -308,6 +308,18 @@ export const AudioRecordModal: React.FC<AudioRecordModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (isRecording && mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      await new Promise<void>((resolve) => {
+        const oldOnStop = mediaRecorderRef.current!.onstop;
+        mediaRecorderRef.current!.onstop = (ev) => {
+          if (oldOnStop) (oldOnStop as any)(ev);
+          setTimeout(resolve, 100);
+        };
+        handleStopRecording();
+      });
+    }
+
     let finalAudio = base64AudioRef.current;
     if (!finalAudio && audioBlobUrl && audioBlobUrl.startsWith('data:')) {
       finalAudio = audioBlobUrl;

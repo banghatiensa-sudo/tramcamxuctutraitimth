@@ -86,7 +86,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
   // Audio Playback
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
-  const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
+  const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const [audioPlayTime, setAudioPlayTime] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
 
   // Teacher Feedback State
   const [teacherReplyText, setTeacherReplyText] = useState('');
@@ -218,26 +219,40 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
   const handleToggleAudio = (id: string, url: string) => {
     if (playingAudioId === id) {
-      if (audioElement) {
-        audioElement.pause();
+      if (audioElementRef.current) {
+        audioElementRef.current.pause();
       }
       setPlayingAudioId(null);
+      setAudioPlayTime({ current: 0, total: 0 });
     } else {
-      if (audioElement) {
-        audioElement.pause();
+      if (audioElementRef.current) {
+        audioElementRef.current.pause();
+        audioElementRef.current.src = '';
       }
       const streamUrl = getPlayableAudioUrl(url);
       const audio = new Audio(streamUrl);
+      audio.volume = 1.0;
       audio.preload = 'auto';
-      audio.onended = () => setPlayingAudioId(null);
+      audio.ontimeupdate = () => {
+        setAudioPlayTime({
+          current: Math.round(audio.currentTime),
+          total: Math.round(audio.duration || 0),
+        });
+      };
+      audio.onended = () => {
+        setPlayingAudioId(null);
+        setAudioPlayTime({ current: 0, total: 0 });
+      };
       audio.onerror = (e) => {
         console.warn('Lỗi stream audio:', e);
+        setPlayingAudioId(null);
+        setAudioPlayTime({ current: 0, total: 0 });
       };
-      audio.play().catch((err) => {
-        console.warn('Audio play error, showing inline player:', err);
-      });
-      setAudioElement(audio);
+      audioElementRef.current = audio;
       setPlayingAudioId(id);
+      audio.play().catch((err) => {
+        console.warn('Audio play error:', err);
+      });
     }
   };
 
@@ -255,8 +270,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       teacherPreviewAudioRef.current?.pause();
       setIsPlayingTeacherPreview(false);
     } else {
-      if (audioElement) audioElement.pause();
+      if (audioElementRef.current) audioElementRef.current.pause();
       const audio = new Audio(teacherRecorder.audioUrl);
+      audio.volume = 1.0;
       audio.onended = () => setIsPlayingTeacherPreview(false);
       audio.onerror = () => setIsPlayingTeacherPreview(false);
       audio.play().catch(() => {});
@@ -268,7 +284,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const handleAddFeedback = async (e: React.FormEvent) => {
     e.preventDefault();
     const hasText = teacherReplyText.trim().length > 0;
-    const hasAudio = !!(teacherRecorder.base64Audio || teacherRecorder.audioUrl);
+    const hasAudio = !!(teacherRecorder.base64Audio || teacherRecorder.audioUrl || teacherRecorder.isRecording);
     if (!selectedSubmission || (!hasText && !hasAudio)) return;
 
     // Lấy âm thanh dạng Base64 chắc chắn không bị mất khi lưu và nghe lại
@@ -1014,14 +1030,18 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     )}
                   </div>
                   {playingAudioId === selectedSubmission.id && (
-                    <div className="w-full mt-2 pt-2 border-t border-sky-100 animate-in fade-in">
-                      <audio
-                        src={getPlayableAudioUrl(selectedSubmission.audioUrl!)}
-                        controls
-                        autoPlay
-                        playsInline
-                        className="w-full h-8 rounded-lg"
-                      />
+                    <div className="w-full mt-2 pt-2 border-t border-sky-100 flex items-center justify-between gap-3 bg-sky-50 px-3 py-2 rounded-xl animate-in fade-in">
+                      <div className="flex items-center gap-2 text-xs font-bold text-sky-800">
+                        <Volume2 size={16} className="text-sky-600 animate-pulse" />
+                        <span>Đang phát: {audioPlayTime.current}s / {audioPlayTime.total || selectedSubmission.audioDuration || 0}s</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleAudio(selectedSubmission.id, selectedSubmission.audioUrl!)}
+                        className="px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-bold cursor-pointer"
+                      >
+                        Tạm dừng
+                      </button>
                     </div>
                   )}
                 </div>
@@ -1391,14 +1411,18 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                               </a>
                             )}
                             {playingAudioId === 'fb-' + fb.id && (
-                              <div className="w-full pt-1 animate-in fade-in">
-                                <audio
-                                  src={getPlayableAudioUrl(fb.audioUrl)}
-                                  controls
-                                  autoPlay
-                                  playsInline
-                                  className="w-full h-8 rounded-lg max-w-sm"
-                                />
+                              <div className="w-full pt-1.5 flex items-center justify-between gap-3 bg-amber-50 px-3 py-2 rounded-xl border border-amber-200 animate-in fade-in">
+                                <div className="flex items-center gap-2 text-xs font-bold text-amber-800">
+                                  <Volume2 size={16} className="text-amber-600 animate-pulse" />
+                                  <span>Đang phát: {audioPlayTime.current}s / {audioPlayTime.total || fb.audioDuration || 0}s</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleAudio('fb-' + fb.id, fb.audioUrl!)}
+                                  className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-bold cursor-pointer"
+                                >
+                                  Tạm dừng
+                                </button>
                               </div>
                             )}
                           </div>

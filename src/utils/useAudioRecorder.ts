@@ -26,6 +26,8 @@ export function useAudioRecorder(): AudioRecorderHook {
   const lastBlobRef = useRef<Blob | null>(null);
   const timerIntervalRef = useRef<number | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const startTimeRef = useRef<number>(0);
+  const stopPromiseResolverRef = useRef<((base64: string | null) => void) | null>(null);
 
   const cleanup = useCallback(() => {
     if (timerIntervalRef.current) {
@@ -52,6 +54,7 @@ export function useAudioRecorder(): AudioRecorderHook {
     setAudioUrl(null);
     setBase64Audio(null);
     setRecordingTime(0);
+    setAudioDuration(0);
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -63,13 +66,13 @@ export function useAudioRecorder(): AudioRecorderHook {
       });
       streamRef.current = stream;
 
-      // Chọn mimeType được trình duyệt hỗ trợ
+      // Chọn mimeType tối ưu được trình duyệt hỗ trợ
       const mimeTypes = [
         'audio/webm;codecs=opus',
         'audio/webm',
-        'audio/ogg;codecs=opus',
         'audio/mp4',
         'audio/aac',
+        'audio/ogg;codecs=opus',
       ];
       let selectedMimeType = '';
       for (const mime of mimeTypes) {
@@ -80,7 +83,7 @@ export function useAudioRecorder(): AudioRecorderHook {
       }
 
       const recorder = selectedMimeType
-        ? new MediaRecorder(stream, { mimeType: selectedMimeType })
+        ? new MediaRecorder(stream, { mimeType: selectedMimeType, audioBitsPerSecond: 64000 })
         : new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
 
@@ -97,26 +100,41 @@ export function useAudioRecorder(): AudioRecorderHook {
         const blobUrl = URL.createObjectURL(audioBlob);
         setAudioUrl(blobUrl);
 
-        // Convert blob to Base64 Data URL for persistent storage
+        // Tính thời lượng chính xác
+        const durationSec = Math.max(1, Math.floor((Date.now() - startTimeRef.current) / 1000));
+        setAudioDuration(durationSec);
+
+        // Chuyển blob thành Base64 Data URL hoàn chỉnh để lưu trữ vĩnh viễn
         const reader = new FileReader();
         reader.onloadend = () => {
-          if (typeof reader.result === 'string') {
-            setBase64Audio(reader.result);
+          const res = typeof reader.result === 'string' ? reader.result : null;
+          setBase64Audio(res);
+          if (stopPromiseResolverRef.current) {
+            stopPromiseResolverRef.current(res);
+            stopPromiseResolverRef.current = null;
+          }
+        };
+        reader.onerror = () => {
+          if (stopPromiseResolverRef.current) {
+            stopPromiseResolverRef.current(null);
+            stopPromiseResolverRef.current = null;
           }
         };
         reader.readAsDataURL(audioBlob);
 
-        // Calculate duration based on elapsed recording time
-        const durationSec = Math.max(1, Math.floor((Date.now() - startTime) / 1000));
-        setAudioDuration(durationSec);
+        // Chỉ đóng track mic sau khi đã hoàn thành trích xuất dữ liệu
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
       };
 
-      recorder.start(200);
+      recorder.start(100);
       setIsRecording(true);
+      startTimeRef.current = Date.now();
 
-      const startTime = Date.now();
       timerIntervalRef.current = window.setInterval(() => {
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000);
         setRecordingTime(elapsed);
         setAudioDuration(elapsed);
       }, 500);
@@ -131,16 +149,16 @@ export function useAudioRecorder(): AudioRecorderHook {
   }, [cleanup]);
 
   const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-    }
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = null;
     }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {
+        console.warn('Lỗi dừng recorder:', e);
+      }
     }
     setIsRecording(false);
   }, []);
@@ -153,10 +171,22 @@ export function useAudioRecorder(): AudioRecorderHook {
     setBase64Audio(null);
     setAudioDuration(0);
     setError(null);
+    stopPromiseResolverRef.current = null;
   }, [cleanup]);
 
   const getAudioBase64 = useCallback(async (): Promise<string | null> => {
+    // 1. Nếu đang ghi âm dở, dừng lại và đợi onstop hoàn tất
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      return new Promise<string | null>((resolve) => {
+        stopPromiseResolverRef.current = resolve;
+        stopRecording();
+      });
+    }
+
+    // 2. Nếu đã có sẵn base64Audio
     if (base64Audio) return base64Audio;
+
+    // 3. Nếu có blob đang chờ convert
     if (lastBlobRef.current) {
       return new Promise<string>((resolve) => {
         const reader = new FileReader();
@@ -168,14 +198,17 @@ export function useAudioRecorder(): AudioRecorderHook {
             resolve('');
           }
         };
+        reader.onerror = () => resolve('');
         reader.readAsDataURL(lastBlobRef.current!);
       });
     }
+
     if (audioUrl && audioUrl.startsWith('data:')) {
       return audioUrl;
     }
+
     return null;
-  }, [base64Audio, audioUrl]);
+  }, [base64Audio, audioUrl, stopRecording]);
 
   return {
     isRecording,
