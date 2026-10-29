@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Volume2, Play, Pause, ExternalLink, RefreshCw, AlertCircle } from 'lucide-react';
-import { isGoogleDriveUrl, extractDriveFileId, getDrivePreviewUrl, getPlayableAudioUrl } from '../utils/googleDriveHelpers';
+import { Volume2, Play, Pause, ExternalLink, RefreshCw, AlertCircle, Loader2 } from 'lucide-react';
+import { isGoogleDriveUrl, extractDriveFileId, getDrivePreviewUrl } from '../utils/googleDriveHelpers';
+import { resolvePlayableAudioUrl, unlockAudioAutoplay } from '../utils/audioLoader';
 
 interface AudioPlayerCardProps {
   url?: string;
@@ -8,6 +9,7 @@ interface AudioPlayerCardProps {
   duration?: number;
   theme?: 'sky' | 'amber' | 'pink' | 'emerald';
   senderRole?: 'teacher' | 'student';
+  compact?: boolean;
 }
 
 export const AudioPlayerCard: React.FC<AudioPlayerCardProps> = ({
@@ -16,78 +18,139 @@ export const AudioPlayerCard: React.FC<AudioPlayerCardProps> = ({
   duration,
   theme = 'sky',
   senderRole,
+  compact = false,
 }) => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [totalDuration, setTotalDuration] = useState(duration || 0);
+  const [resolvedSrc, setResolvedSrc] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(false);
   const [hasError, setHasError] = useState(false);
-  const [reloadKey, setReloadKey] = useState(0);
+  const [autoPlayRequested, setAutoPlayRequested] = useState(false);
+  const [reloadTrigger, setReloadTrigger] = useState(0);
 
   if (!url) return null;
 
   const fileId = extractDriveFileId(url);
   const isDrive = isGoogleDriveUrl(url);
-
-  // URL phát chính: qua proxy máy chủ (tự động transcode sang MP3 và hỗ trợ Range 206)
-  const proxyStreamUrl = isDrive && fileId ? `/api/audio-proxy?id=${fileId}` : getPlayableAudioUrl(url);
-  // URL dự phòng trực tiếp từ Google Drive
-  const fallbackDriveUrl = fileId ? `https://docs.google.com/uc?export=download&id=${fileId}` : url;
   const previewDriveUrl = getDrivePreviewUrl(url);
+
+  // Tự động phân giải link âm thanh (chuyển sang Blob MP3 trong RAM để phát ngay lập tức)
+  useEffect(() => {
+    let isMounted = true;
+    setIsLoading(true);
+    setHasError(false);
+
+    resolvePlayableAudioUrl(url)
+      .then((playableUrl) => {
+        if (!isMounted) return;
+        setResolvedSrc(playableUrl);
+        setIsLoading(false);
+        setHasError(false);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        console.warn('Lỗi phân giải audio:', err);
+        setIsLoading(false);
+        // Fallback về url ban đầu
+        setResolvedSrc(url);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [url, reloadTrigger]);
+
+  // Nếu người dùng đã nhấn "Nghe ngay" trong khi đang nạp thì tự động phát ngay khi nạp xong
+  useEffect(() => {
+    if (autoPlayRequested && resolvedSrc && audioRef.current) {
+      audioRef.current
+        .play()
+        .then(() => {
+          setIsPlaying(true);
+          setAutoPlayRequested(false);
+        })
+        .catch((err) => {
+          console.warn('Tự động phát không thành công:', err);
+          setAutoPlayRequested(false);
+        });
+    }
+  }, [autoPlayRequested, resolvedSrc]);
 
   const themeClasses = {
     sky: {
-      bg: 'bg-sky-50/90',
+      bg: 'bg-sky-50/95',
       border: 'border-sky-300',
       badge: 'bg-sky-500 text-white',
-      text: 'text-sky-900',
+      text: 'text-sky-950',
       subtext: 'text-sky-700',
       btn: 'bg-sky-600 hover:bg-sky-700 text-white',
     },
     amber: {
-      bg: 'bg-amber-50/90',
+      bg: 'bg-amber-50/95',
       border: 'border-amber-300',
       badge: 'bg-amber-500 text-white',
-      text: 'text-amber-900',
+      text: 'text-amber-950',
       subtext: 'text-amber-700',
       btn: 'bg-amber-600 hover:bg-amber-700 text-white',
     },
     pink: {
-      bg: 'bg-pink-50/90',
+      bg: 'bg-pink-50/95',
       border: 'border-pink-300',
       badge: 'bg-pink-500 text-white',
-      text: 'text-pink-900',
+      text: 'text-pink-950',
       subtext: 'text-pink-700',
       btn: 'bg-pink-600 hover:bg-pink-700 text-white',
     },
     emerald: {
-      bg: 'bg-emerald-50/90',
+      bg: 'bg-emerald-50/95',
       border: 'border-emerald-300',
       badge: 'bg-emerald-500 text-white',
-      text: 'text-emerald-900',
+      text: 'text-emerald-950',
       subtext: 'text-emerald-700',
       btn: 'bg-emerald-600 hover:bg-emerald-700 text-white',
     },
   }[theme];
 
-  const defaultTitle = senderRole === 'teacher'
-    ? 'Lời dặn dò bằng giọng nói của Thầy Cô'
-    : 'Ghi âm giọng nói tâm sự';
+  const defaultTitle =
+    senderRole === 'teacher'
+      ? 'Lời dặn dò bằng giọng nói của Thầy Cô'
+      : 'Ghi âm giọng nói tâm sự của học sinh';
 
   const togglePlay = () => {
+    unlockAudioAutoplay();
+
     if (!audioRef.current) return;
+
     if (isPlaying) {
       audioRef.current.pause();
+      setIsPlaying(false);
     } else {
-      audioRef.current.play().catch((err) => {
-        console.warn('Lỗi khi phát audio:', err);
-      });
+      if (!resolvedSrc || isLoading) {
+        setAutoPlayRequested(true);
+        return;
+      }
+
+      audioRef.current
+        .play()
+        .then(() => {
+          setIsPlaying(true);
+          setHasError(false);
+        })
+        .catch((err) => {
+          console.warn('Lỗi khi phát audio:', err);
+          // Nếu phát thất bại, thử reload lại luồng âm thanh
+          setHasError(true);
+          setIsPlaying(false);
+        });
     }
   };
 
   const handleReload = () => {
     setHasError(false);
-    setReloadKey((prev) => prev + 1);
+    setResolvedSrc('');
+    setReloadTrigger((prev) => prev + 1);
   };
 
   return (
@@ -102,7 +165,7 @@ export const AudioPlayerCard: React.FC<AudioPlayerCardProps> = ({
               isPlaying ? 'animate-pulse' : ''
             }`}
           >
-            <Volume2 size={16} />
+            {isLoading ? <Loader2 size={16} className="animate-spin" /> : <Volume2 size={16} />}
           </div>
           <div>
             <div className={`text-xs font-black leading-tight ${themeClasses.text}`}>
@@ -111,6 +174,7 @@ export const AudioPlayerCard: React.FC<AudioPlayerCardProps> = ({
             <div className={`text-[10px] font-semibold ${themeClasses.subtext}`}>
               {totalDuration > 0 ? `Thời lượng: ~${totalDuration} giây` : 'Ghi âm âm thanh chất lượng cao'}
               {isDrive && ' • Lưu trữ Google Drive'}
+              {isLoading && ' • Đang chuẩn bị âm thanh...'}
             </div>
           </div>
         </div>
@@ -119,10 +183,25 @@ export const AudioPlayerCard: React.FC<AudioPlayerCardProps> = ({
           <button
             type="button"
             onClick={togglePlay}
-            className={`px-3 py-1.5 rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-xs transition-all ${themeClasses.btn}`}
+            disabled={isLoading && !autoPlayRequested}
+            className={`px-3 py-1.5 rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-xs transition-all active:scale-95 ${themeClasses.btn}`}
           >
-            {isPlaying ? <Pause size={13} /> : <Play size={13} />}
-            <span>{isPlaying ? 'Tạm dừng' : 'Nghe ngay'}</span>
+            {isLoading ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : isPlaying ? (
+              <Pause size={13} />
+            ) : (
+              <Play size={13} />
+            )}
+            <span>
+              {isLoading
+                ? autoPlayRequested
+                  ? 'Đang phát...'
+                  : 'Đang tải...'
+                : isPlaying
+                ? 'Tạm dừng'
+                : 'Bấm nghe ngay'}
+            </span>
           </button>
 
           {isDrive && (
@@ -140,52 +219,56 @@ export const AudioPlayerCard: React.FC<AudioPlayerCardProps> = ({
         </div>
       </div>
 
-      {/* Trình phát Audio HTML5 chuẩn hiển thị rõ ràng */}
-      <div className="w-full bg-white/80 p-1 rounded-xl border border-slate-200/80 shadow-2xs">
-        <audio
-          key={reloadKey}
-          ref={audioRef}
-          controls
-          playsInline
-          preload="metadata"
-          className="w-full h-9 rounded-lg"
-          onPlay={() => setIsPlaying(true)}
-          onPause={() => setIsPlaying(false)}
-          onEnded={() => {
-            setIsPlaying(false);
-            setCurrentTime(0);
-          }}
-          onTimeUpdate={(e) => {
-            setCurrentTime(Math.round(e.currentTarget.currentTime));
-            if (e.currentTarget.duration && !isNaN(e.currentTarget.duration) && isFinite(e.currentTarget.duration)) {
-              setTotalDuration(Math.round(e.currentTarget.duration));
-            }
-          }}
-          onError={() => {
-            setHasError(true);
-            setIsPlaying(false);
-          }}
-        >
-          <source src={proxyStreamUrl} type="audio/mpeg" />
-          {isDrive && <source src={fallbackDriveUrl} type="audio/webm" />}
-          <source src={url} />
-          Trình duyệt của bạn không hỗ trợ thẻ audio HTML5.
-        </audio>
+      {/* Trình phát Audio HTML5 chuẩn có thanh trượt thời gian và âm lượng */}
+      <div className="w-full bg-white/90 p-1.5 rounded-xl border border-slate-200/90 shadow-2xs">
+        {resolvedSrc ? (
+          <audio
+            ref={audioRef}
+            src={resolvedSrc}
+            controls
+            playsInline
+            preload="auto"
+            className="w-full h-9 rounded-lg"
+            onPlay={() => setIsPlaying(true)}
+            onPause={() => setIsPlaying(false)}
+            onEnded={() => {
+              setIsPlaying(false);
+              setCurrentTime(0);
+            }}
+            onTimeUpdate={(e) => {
+              setCurrentTime(Math.round(e.currentTarget.currentTime));
+              if (e.currentTarget.duration && !isNaN(e.currentTarget.duration) && isFinite(e.currentTarget.duration)) {
+                setTotalDuration(Math.round(e.currentTarget.duration));
+              }
+            }}
+            onError={(e) => {
+              console.warn('Lỗi phần tử audio HTML5:', e);
+              setHasError(true);
+              setIsPlaying(false);
+            }}
+          />
+        ) : (
+          <div className="w-full h-9 rounded-lg bg-slate-50 flex items-center justify-center gap-2 text-xs text-slate-500 font-medium">
+            <Loader2 size={14} className="animate-spin text-slate-400" />
+            <span>Đang chuẩn bị luồng âm thanh trực tiếp...</span>
+          </div>
+        )}
       </div>
 
+      {/* Trạng thái hỗ trợ nếu mạng chậm */}
       {hasError && (
-        <div className="flex items-center justify-between p-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold">
+        <div className="flex items-center justify-between p-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold animate-in fade-in">
           <div className="flex items-center gap-1.5">
             <AlertCircle size={14} className="shrink-0" />
-            <span>Đường truyền đang nạp. Em có thể bấm "Tải lại" hoặc mở Drive nhé!</span>
+            <span>Đường truyền đang nạp lại. Em có thể bấm "Thử lại" hoặc "Mở Drive" nhé!</span>
           </div>
           <button
             type="button"
             onClick={handleReload}
-            className="px-2 py-0.5 rounded-md bg-rose-600 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+            className="px-2.5 py-1 rounded-md bg-rose-600 text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer hover:bg-rose-700 shadow-2xs"
           >
             <RefreshCw size={11} />
-            <span>Tải lại</span>
+            <span>Thử lại</span>
           </button>
         </div>
       )}

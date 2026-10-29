@@ -147,6 +147,26 @@ function parseAppsScriptFeedbacks(note, defaultStudentName, replyAudioUrl) {
 
 // 1. HÀM ĐỌC DỮ LIỆU TỪ GOOGLE SHEET TRẢ VỀ CHO GIAO DIỆN ADMIN WEB
 function doGet(e) {
+  // A. LẤY TRỰC TIẾP DỮ LIỆU FILE ÂM THANH TỪ GOOGLE DRIVE (CHO BẢN WEB PHÁT NGAY LẬP TỨC)
+  if (e && e.parameter && e.parameter.action === "get_audio" && e.parameter.id) {
+    try {
+      var audioFile = DriveApp.getFileById(e.parameter.id);
+      var audioBlob = audioFile.getBlob();
+      var base64Content = Utilities.base64Encode(audioBlob.getBytes());
+      var mimeType = audioBlob.getContentType() || "audio/webm";
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "success",
+        mimeType: mimeType,
+        base64: "data:" + mimeType + ";base64," + base64Content
+      })).setMimeType(ContentService.MimeType.JSON);
+    } catch (errAudio) {
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "error",
+        message: errAudio.toString()
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+  }
+
   var lock = LockService.getScriptLock();
   lock.tryLock(15000);
 

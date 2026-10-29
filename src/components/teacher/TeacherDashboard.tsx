@@ -25,6 +25,7 @@ import {
 } from '../../utils/googleDriveHelpers';
 import { convertBlobToDataUrl } from '../../utils/syncGoogleAppsScript';
 import { AudioPlayerCard } from '../AudioPlayerCard';
+import { resolvePlayableAudioUrl, unlockAudioAutoplay } from '../../utils/audioLoader';
 
 interface TeacherDashboardProps {
   submissions: StudentSubmission[];
@@ -218,7 +219,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     }, 2000);
   };
 
-  const handleToggleAudio = (id: string, url: string) => {
+  const handleToggleAudio = async (id: string, url: string) => {
+    unlockAudioAutoplay();
     if (playingAudioId === id) {
       if (audioElementRef.current) {
         audioElementRef.current.pause();
@@ -230,30 +232,33 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         audioElementRef.current.pause();
         audioElementRef.current.src = '';
       }
-      const streamUrl = getPlayableAudioUrl(url);
-      const audio = new Audio(streamUrl);
-      audio.volume = 1.0;
-      audio.preload = 'auto';
-      audio.ontimeupdate = () => {
-        setAudioPlayTime({
-          current: Math.round(audio.currentTime),
-          total: Math.round(audio.duration || 0),
-        });
-      };
-      audio.onended = () => {
-        setPlayingAudioId(null);
-        setAudioPlayTime({ current: 0, total: 0 });
-      };
-      audio.onerror = (e) => {
-        console.warn('Lỗi stream audio:', e);
-        setPlayingAudioId(null);
-        setAudioPlayTime({ current: 0, total: 0 });
-      };
-      audioElementRef.current = audio;
       setPlayingAudioId(id);
-      audio.play().catch((err) => {
+      try {
+        const streamUrl = await resolvePlayableAudioUrl(url);
+        const audio = new Audio(streamUrl);
+        audio.volume = 1.0;
+        audio.preload = 'auto';
+        audio.ontimeupdate = () => {
+          setAudioPlayTime({
+            current: Math.round(audio.currentTime),
+            total: Math.round(audio.duration || 0),
+          });
+        };
+        audio.onended = () => {
+          setPlayingAudioId(null);
+          setAudioPlayTime({ current: 0, total: 0 });
+        };
+        audio.onerror = (e) => {
+          console.warn('Lỗi stream audio:', e);
+          setPlayingAudioId(null);
+          setAudioPlayTime({ current: 0, total: 0 });
+        };
+        audioElementRef.current = audio;
+        await audio.play();
+      } catch (err) {
         console.warn('Audio play error:', err);
-      });
+        setPlayingAudioId(null);
+      }
     }
   };
 
@@ -1015,49 +1020,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 const replyDuration = selectedSubmission.studentReplyDuration || selectedSubmission.feedbacks?.find((f) => f.senderRole === 'student' && f.audioUrl)?.audioDuration || 0;
                 if (!replyAudio) return null;
                 return (
-                  <div className="p-3 bg-pink-50 rounded-xl border border-pink-200 flex flex-wrap items-center justify-between gap-2 mb-2">
-                    <div className="flex items-center gap-2 text-xs font-bold text-pink-700">
-                      <Volume2 size={16} />
-                      <span>Giọng nói bé nhắn lại ({replyDuration}s)</span>
-                      {isGoogleDriveUrl(replyAudio) && (
-                        <span className="px-2 py-0.5 rounded-md bg-pink-100 text-[10px] text-pink-800 font-semibold">
-                          Google Drive
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleToggleAudio('reply-' + selectedSubmission.id, replyAudio)}
-                        className="px-3 py-1.5 rounded-xl bg-pink-500 hover:bg-pink-600 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs"
-                      >
-                        {playingAudioId === 'reply-' + selectedSubmission.id ? <Pause size={14} /> : <Play size={14} />}
-                        <span>{playingAudioId === 'reply-' + selectedSubmission.id ? 'Tạm dừng' : 'Nghe giọng bé'}</span>
-                      </button>
-                      {isGoogleDriveUrl(replyAudio) && (
-                        <a
-                          href={getDrivePreviewUrl(replyAudio)}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="px-2.5 py-1.5 rounded-xl bg-pink-100 hover:bg-pink-200 text-pink-800 font-bold text-xs flex items-center gap-1"
-                          title="Mở file trên Google Drive"
-                        >
-                          <ExternalLink size={12} />
-                          <span>Mở Drive</span>
-                        </a>
-                      )}
-                    </div>
-                    {playingAudioId === 'reply-' + selectedSubmission.id && (
-                      <div className="w-full mt-2 pt-2 border-t border-pink-200 animate-in fade-in">
-                        <audio
-                          src={getPlayableAudioUrl(replyAudio)}
-                          controls
-                          autoPlay
-                          playsInline
-                          className="w-full h-8 rounded-lg"
-                        />
-                      </div>
-                    )}
+                  <div className="mb-3">
+                    <AudioPlayerCard
+                      url={replyAudio}
+                      title="Bản ghi âm giọng nói bé nhắn lại Thầy Cô"
+                      duration={replyDuration}
+                      theme="pink"
+                      senderRole="student"
+                    />
                   </div>
                 );
               })()}
@@ -1437,6 +1407,54 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         submissions={submissions}
         onSubmissionsUpdated={onSubmissionsUpdated}
       />
+
+      {/* Thanh phát âm thanh nổi ở góc dưới màn hình khi Thầy Cô bấm nghe nhanh trong danh sách */}
+      {playingAudioId && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-slate-900/95 text-white px-5 py-3 rounded-2xl shadow-2xl border border-slate-700/80 flex items-center gap-4 animate-in slide-in-from-bottom duration-200 backdrop-blur-md max-w-[92vw] sm:max-w-md">
+          <div className="w-9 h-9 rounded-full bg-amber-500 text-white flex items-center justify-center shrink-0 animate-pulse shadow-md">
+            <Volume2 size={18} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-bold truncate text-slate-100">
+              Đang phát âm thanh ghi âm
+            </div>
+            <div className="text-[11px] font-semibold text-amber-400">
+              {audioPlayTime.current}s / {audioPlayTime.total || 0}s
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (audioElementRef.current) {
+                if (audioElementRef.current.paused) {
+                  audioElementRef.current.play();
+                } else {
+                  audioElementRef.current.pause();
+                }
+              }
+            }}
+            className="p-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold cursor-pointer transition-colors shadow-xs"
+            title="Tạm dừng / Tiếp tục"
+          >
+            {audioElementRef.current && !audioElementRef.current.paused ? <Pause size={16} /> : <Play size={16} />}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (audioElementRef.current) {
+                audioElementRef.current.pause();
+                audioElementRef.current.src = '';
+              }
+              setPlayingAudioId(null);
+              setAudioPlayTime({ current: 0, total: 0 });
+            }}
+            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white cursor-pointer transition-colors"
+            title="Đóng trình phát"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
     </div>
   );
 };
